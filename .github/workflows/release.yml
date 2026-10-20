@@ -10,7 +10,7 @@ on:
       version:
         description: 'Numéro de version (ex. 1.0.0) — la release n''est créée que depuis un tag'
         required: true
-        default: '1.0.0'
+        default: '1.0.1'
 
 permissions:
   contents: write
