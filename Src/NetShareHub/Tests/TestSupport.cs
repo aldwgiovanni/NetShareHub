@@ -150,6 +150,40 @@ internal static class Logs
     public static Microsoft.Extensions.Logging.ILogger<T> For<T>() => NullLogger<T>.Instance;
 }
 
+/// <summary>Mémorise les messages écrits, pour vérifier ce qui apparaît dans le Journal.</summary>
+internal sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+{
+    private readonly List<(Microsoft.Extensions.Logging.LogLevel Level, string Message)> _entries = new();
+
+    public IReadOnlyList<(Microsoft.Extensions.Logging.LogLevel Level, string Message)> Entries
+    {
+        get
+        {
+            lock (_entries)
+            {
+                return _entries.ToList();
+            }
+        }
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        Microsoft.Extensions.Logging.LogLevel logLevel,
+        Microsoft.Extensions.Logging.EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        lock (_entries)
+        {
+            _entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
+}
+
 internal sealed class TempDirectory : IDisposable
 {
     public TempDirectory()

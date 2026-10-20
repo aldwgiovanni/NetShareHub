@@ -46,6 +46,8 @@ public sealed class WindowsSharingBackend : ISharingBackend
         _journal = new UndoJournal(Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-windows.json"), runner, logger);
     }
 
+    public bool HasPendingRecovery => _journal.HasPending;
+
     public async Task<BackendCapabilities> ProbeAsync(CancellationToken cancellationToken = default)
     {
         if (_cachedCapabilities is not null && DateTimeOffset.UtcNow - _cachedAt < ProbeCacheDuration)
@@ -164,9 +166,17 @@ public sealed class WindowsSharingBackend : ISharingBackend
     private async Task StartHotspotAsync(NetworkAdapter source, WifiHotspotPlan hotspot, CancellationToken ct)
     {
         _logger.LogInformation("Hotspot Wi-Fi « {Ssid} » via {Source}", hotspot.Ssid, source.Name);
-        _journal.Push(CommandSpec.PowerShell(WindowsScripts.StopHotspot(), "Arrêt du Point d'accès mobile"));
-
         var guid = Guid.TryParse(source.Id, out var parsed) ? parsed.ToString() : string.Empty;
+
+        // Vérifié avant d'inscrire l'arrêt au journal : sinon l'annulation de cet échec couperait le hotspot de l'utilisateur.
+        var state = await _runner.RunAsync(
+            CommandSpec.PowerShell(WindowsScripts.QueryHotspotState(guid), "État du Point d'accès mobile", 30, ignoreFailure: true), ct);
+        if (state.StdOut.Contains("STATE:On", StringComparison.Ordinal))
+        {
+            throw new SharingException("Le Point d'accès mobile de Windows est déjà actif : désactivez-le dans Paramètres avant de continuer.");
+        }
+
+        _journal.Push(CommandSpec.PowerShell(WindowsScripts.StopHotspot(), "Arrêt du Point d'accès mobile"));
         await ExecAsync(
             CommandSpec.PowerShell(
                 WindowsScripts.StartHotspot(guid, hotspot.Ssid, hotspot.Password, hotspot.Band),

@@ -1,8 +1,11 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NetShareHub.Desktop.Extensions;
+using NetShareHub.Desktop.Logging;
 using NetShareHub.Desktop.ViewModels;
 using NetShareHub.Desktop.Views;
 
@@ -26,6 +29,10 @@ public partial class App : Avalonia.Application
                 .AddMyApplicationGroup()
                 .AddMyViewModelGroup()
                 .BuildServiceProvider();
+
+            UnhandledExceptionLogger.Install(
+                _services.GetRequiredService<ILoggerFactory>().CreateLogger("NetShareHub"),
+                Dispatcher.UIThread);
 
             var main = _services.GetRequiredService<MainViewModel>();
             main.RequestExit = () =>

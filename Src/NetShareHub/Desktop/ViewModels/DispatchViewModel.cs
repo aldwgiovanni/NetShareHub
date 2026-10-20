@@ -131,6 +131,7 @@ public sealed partial class DispatchViewModel : ObservableObject
         _selectedStrategy = Strategies[0];
 
         catalog.SelectionChanged += (_, _) => OnPropertyChanged(nameof(CanStart));
+        catalog.AvailabilityChanged += (_, _) => OnPropertyChanged(nameof(CanStart));
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
@@ -150,7 +151,14 @@ public sealed partial class DispatchViewModel : ObservableObject
 
     public bool CanEdit => State is RunState.Stopped or RunState.Faulted;
 
-    public bool CanStart => CanEdit && Catalog.SelectedSources.Any();
+    public bool CanStart => CanEdit && Catalog.SelectedSources.Any() && !HasPortError;
+
+    /// <summary>Port vide, non numérique ou hors plage : signalé au lieu de démarrer en silence sur le port par défaut.</summary>
+    public string PortError => Port is { } port && port == decimal.Truncate(port) && port is >= 1 and <= 65535
+        ? string.Empty
+        : "Indiquez un port entre 1 et 65535.";
+
+    public bool HasPortError => PortError.Length > 0;
 
     public string StateText => State switch
     {
@@ -174,7 +182,7 @@ public sealed partial class DispatchViewModel : ObservableObject
         var d = settings.Dispatch;
         Port = d.Port;
         AllowLan = d.AllowLan;
-        SelectedStrategy = Strategies.First(s => s.Value == d.Strategy);
+        SelectedStrategy = Strategies.FirstOrDefault(s => s.Value == d.Strategy) ?? Strategies[0];
         StickyDestinations = d.StickyDestinations;
         StickyMinutes = d.StickyMinutes;
         HealthProbe = d.HealthProbe;
@@ -186,7 +194,7 @@ public sealed partial class DispatchViewModel : ObservableObject
     public DispatchConfig_InDto BuildConfig() => new()
     {
         AllowLan = AllowLan,
-        Port = (int)(Port ?? 1080),
+        Port = HasPortError ? new DispatchConfig_InDto().Port : (int)Port!.Value,
         Strategy = SelectedStrategy.Value,
         StickyDestinations = StickyDestinations,
         StickyMinutes = (int)(StickyMinutes ?? 10),
@@ -204,6 +212,12 @@ public sealed partial class DispatchViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
+        if (HasPortError)
+        {
+            Message = PortError;
+            return;
+        }
+
         _requestSave();
         _busy = true;
         State = RunState.Starting;
@@ -345,7 +359,13 @@ public sealed partial class DispatchViewModel : ObservableObject
         _requestSave();
     }
 
-    partial void OnPortChanged(decimal? value) => _requestSave();
+    partial void OnPortChanged(decimal? value)
+    {
+        OnPropertyChanged(nameof(PortError));
+        OnPropertyChanged(nameof(HasPortError));
+        OnPropertyChanged(nameof(CanStart));
+        _requestSave();
+    }
 
     partial void OnStickyDestinationsChanged(bool value) => _requestSave();
 

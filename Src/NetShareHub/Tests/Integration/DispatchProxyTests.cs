@@ -12,7 +12,7 @@ namespace NetShareHub.Tests.Integration;
 /// Teste le vrai proxy de bout en bout sur la boucle locale : de vrais sockets, de vrais protocoles SOCKS5 et HTTP.
 /// Seul le forçage d'interface est remplacé (<see cref="LoopbackBinder"/>), le reste est le code de production.
 /// </summary>
-public sealed class DispatchProxyTests : IAsyncLifetime
+public sealed partial class DispatchProxyTests : IAsyncLifetime
 {
     private readonly LoopbackBinder _binder = new();
     private readonly FakeInventory _inventory = new(

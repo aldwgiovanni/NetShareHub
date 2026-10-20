@@ -16,5 +16,6 @@ public interface IPrivilegeService
     bool IsElevated { get; }
 
     /// <summary>Relance l'application avec élévation (UAC sous Windows, pkexec sous Linux). Renvoie faux si l'utilisateur annule.</summary>
-    bool TryRelaunchElevated();
+    /// <remarks>Sous Linux, attend que polkit ait accordé l'autorisation : annuler la demande ne doit pas fermer l'application.</remarks>
+    Task<bool> TryRelaunchElevatedAsync(CancellationToken cancellationToken = default);
 }

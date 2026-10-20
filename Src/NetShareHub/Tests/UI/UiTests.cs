@@ -50,11 +50,20 @@ internal sealed class FakeSharingService : IInternetSharingService
 
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
+        StopCalls++;
         Push(new SharingStatus_OutDto { State = RunState.Stopped, Message = "Partage arrêté." });
         return Task.CompletedTask;
     }
 
-    public Task<bool> RecoverAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    public int RecoverCalls { get; private set; }
+
+    public int StopCalls { get; private set; }
+
+    public Task<bool> RecoverAsync(CancellationToken cancellationToken = default)
+    {
+        RecoverCalls++;
+        return Task.FromResult(false);
+    }
 
     public void Push(SharingStatus_OutDto status)
     {
@@ -85,8 +94,16 @@ internal sealed class FakeDispatchService : IDispatchService
         return Task.CompletedTask;
     }
 
+    /// <summary>Simule un arrêt qui échoue (exception inattendue).</summary>
+    public bool FailOnStop { get; set; }
+
     public Task StopAsync()
     {
+        if (FailOnStop)
+        {
+            throw new InvalidOperationException("arrêt impossible");
+        }
+
         Status = new DispatchStatus_OutDto { State = RunState.Stopped };
         return Task.CompletedTask;
     }
@@ -113,10 +130,13 @@ internal sealed class FakePrivilegeService(bool elevated) : IPrivilegeService
 
     public int RelaunchCalls { get; private set; }
 
-    public bool TryRelaunchElevated()
+    /// <summary>Faux : simule une élévation annulée (UAC refusé, fenêtre polkit fermée).</summary>
+    public bool Accept { get; set; } = true;
+
+    public Task<bool> TryRelaunchElevatedAsync(CancellationToken cancellationToken = default)
     {
         RelaunchCalls++;
-        return true;
+        return Task.FromResult(Accept);
     }
 }
 
@@ -133,8 +153,10 @@ internal sealed class UiRig : IDisposable
         Privilege = new FakePrivilegeService(elevated);
         Logs = new LogStore(_dir.Path);
         Catalog = new AdapterCatalog();
-        Main = new MainViewModel(Inventory, Sharing, Dispatch, Privilege, Settings, Catalog, Logs, Tests.Logs.For<MainViewModel>());
+        Main = new MainViewModel(Inventory, Sharing, Dispatch, Privilege, Settings, Catalog, Logs, Logger);
     }
+
+    public ListLogger<MainViewModel> Logger { get; } = new();
 
     public FakeInventory Inventory { get; }
 

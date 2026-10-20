@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -86,13 +87,16 @@ public sealed partial class SharingViewModel : ObservableObject
         _selectedBand = Bands[0];
 
         sharing.StatusChanged += (_, status) => Dispatcher.UIThread.Post(() => ApplyStatus(status));
-        catalog.SelectionChanged += (_, _) =>
-        {
-            OnPropertyChanged(nameof(SelectedSourceCount));
-            OnPropertyChanged(nameof(SelectedTargetCount));
-            OnPropertyChanged(nameof(CanStart));
-            OnPropertyChanged(nameof(Summary));
-        };
+        catalog.SelectionChanged += (_, _) => NotifySelection();
+        catalog.AvailabilityChanged += (_, _) => NotifySelection();
+    }
+
+    private void NotifySelection()
+    {
+        OnPropertyChanged(nameof(SelectedSourceCount));
+        OnPropertyChanged(nameof(SelectedTargetCount));
+        OnPropertyChanged(nameof(CanStart));
+        OnPropertyChanged(nameof(Summary));
     }
 
     public AdapterCatalog Catalog { get; }
@@ -111,6 +115,46 @@ public sealed partial class SharingViewModel : ObservableObject
 
     public bool CanToggleHotspot => SupportsWifiHotspot && CanConfigure;
 
+    /// <summary>
+    /// Interrupteur du hotspot tel qu'affiché : la préférence enregistrée (<see cref="HotspotEnabled"/>) n'est appliquée que si
+    /// la machine sait émettre un hotspot. Sans cela, un hotspot restauré « activé » bloquerait tout partage, interrupteur grisé.
+    /// </summary>
+    public bool IsHotspotOn
+    {
+        get => HotspotEnabled && SupportsWifiHotspot;
+        set => HotspotEnabled = value;
+    }
+
+    /// <summary>Problème de nom ou de mot de passe du hotspot, signalé avant le démarrage (vide si tout va bien).</summary>
+    public string HotspotError
+    {
+        get
+        {
+            if (!IsHotspotOn)
+            {
+                return string.Empty;
+            }
+
+            // La limite du SSID est de 32 octets : un caractère accentué ou un emoji en occupe plusieurs.
+            var ssidBytes = Encoding.UTF8.GetByteCount(Ssid.Trim());
+            if (ssidBytes == 0)
+            {
+                return "Donnez un nom au réseau Wi-Fi.";
+            }
+
+            if (ssidBytes > 32)
+            {
+                return $"Nom du réseau trop long : {ssidBytes} octets pour 32 au maximum (les accents et emojis comptent pour plusieurs).";
+            }
+
+            return Password.Length is < 8 or > 63 || Password.Any(c => c < 32 || c > 126)
+                ? "Le mot de passe doit contenir de 8 à 63 caractères ASCII imprimables (sans accent)."
+                : string.Empty;
+        }
+    }
+
+    public bool HasHotspotError => HotspotError.Length > 0;
+
     public bool CanStop => State == RunState.Running;
 
     /// <summary>Les destinations et le hotspot ne se modifient que lorsque le partage est arrêté.</summary>
@@ -118,10 +162,10 @@ public sealed partial class SharingViewModel : ObservableObject
 
     public int SelectedSourceCount => Catalog.SelectedSources.Count();
 
-    public int SelectedTargetCount => Catalog.SelectedTargets.Count() + (HotspotEnabled ? 1 : 0);
+    public int SelectedTargetCount => Catalog.SelectedTargets.Count() + (IsHotspotOn ? 1 : 0);
 
     public bool CanStart
-        => IsElevated && State is RunState.Stopped or RunState.Faulted && SelectedSourceCount > 0 && SelectedTargetCount > 0;
+        => IsElevated && State is RunState.Stopped or RunState.Faulted && SelectedSourceCount > 0 && SelectedTargetCount > 0 && !HasHotspotError;
 
     public string StateText => State switch
     {
@@ -148,7 +192,7 @@ public sealed partial class SharingViewModel : ObservableObject
 
             var sources = string.Join(", ", Catalog.SelectedSources.Select(s => s.Name));
             var targets = Catalog.SelectedTargets.Select(t => t.Name).ToList();
-            if (HotspotEnabled)
+            if (IsHotspotOn)
             {
                 targets.Add($"hotspot « {Ssid} »");
             }
@@ -164,7 +208,7 @@ public sealed partial class SharingViewModel : ObservableObject
         SupportsTransparentBalancing = info.SupportsTransparentBalancing;
         IsLinux = info.Platform == HostPlatform.Linux;
         CapabilityNote = string.Join(" ", info.Notes);
-        OnPropertyChanged(nameof(CanStart));
+        NotifyHotspot();
         OnPropertyChanged(nameof(NeedsElevation));
     }
 
@@ -175,8 +219,8 @@ public sealed partial class SharingViewModel : ObservableObject
         if (settings.Sharing.Hotspot is { } hotspot)
         {
             Ssid = string.IsNullOrWhiteSpace(hotspot.Ssid) ? Ssid : hotspot.Ssid;
-            Password = hotspot.Password.Length >= 8 ? hotspot.Password : Password;
-            SelectedBand = Bands.First(b => b.Value == hotspot.Band);
+            Password = hotspot.Password is { Length: >= 8 } ? hotspot.Password : Password;
+            SelectedBand = Bands.FirstOrDefault(b => b.Value == hotspot.Band) ?? Bands[0];
             _pendingHotspotAdapterId = hotspot.AdapterId;
         }
 
@@ -184,15 +228,29 @@ public sealed partial class SharingViewModel : ObservableObject
     }
 
     private string? _pendingHotspotAdapterId;
+    private bool _selectingHotspotAdapter;
 
-    /// <summary>Choisit la carte Wi-Fi du hotspot (Linux) : celle enregistrée, sinon la première qui n'est pas une source.</summary>
+    /// <summary>Carte du hotspot à enregistrer : le dernier choix de l'utilisateur, même si elle est absente pour l'instant.</summary>
+    public string? PreferredHotspotAdapterId => _pendingHotspotAdapterId ?? SelectedHotspotAdapter?.Id;
+
+    /// <summary>Choisit la carte Wi-Fi du hotspot (Linux) : celle choisie en dernier, sinon la première qui n'est pas une source.</summary>
     public void SelectHotspotAdapter()
     {
         var candidates = Catalog.WifiAdapters.ToList();
-        SelectedHotspotAdapter =
-            candidates.FirstOrDefault(a => a.Id == _pendingHotspotAdapterId && !a.IsSource)
-            ?? candidates.FirstOrDefault(a => !a.IsSource)
-            ?? candidates.FirstOrDefault();
+
+        // Choix automatique : il ne remplace pas la préférence de l'utilisateur (sa carte peut n'être que débranchée).
+        _selectingHotspotAdapter = true;
+        try
+        {
+            SelectedHotspotAdapter =
+                candidates.FirstOrDefault(a => a.Id == _pendingHotspotAdapterId && !a.IsSource)
+                ?? candidates.FirstOrDefault(a => !a.IsSource)
+                ?? candidates.FirstOrDefault();
+        }
+        finally
+        {
+            _selectingHotspotAdapter = false;
+        }
     }
 
     public SharingRequest_InDto BuildRequest()
@@ -221,7 +279,7 @@ public sealed partial class SharingViewModel : ObservableObject
     {
         _requestSave();
         var request = BuildRequest();
-        if (!HotspotEnabled)
+        if (!IsHotspotOn)
         {
             request.Hotspot = null;
         }
@@ -265,19 +323,50 @@ public sealed partial class SharingViewModel : ObservableObject
 
     partial void OnHotspotEnabledChanged(bool value)
     {
+        NotifyHotspot();
+        _requestSave();
+    }
+
+    partial void OnSupportsWifiHotspotChanged(bool value) => NotifyHotspot();
+
+    private void NotifyHotspot()
+    {
+        OnPropertyChanged(nameof(IsHotspotOn));
+        OnPropertyChanged(nameof(HotspotError));
+        OnPropertyChanged(nameof(HasHotspotError));
         OnPropertyChanged(nameof(SelectedTargetCount));
         OnPropertyChanged(nameof(CanStart));
         OnPropertyChanged(nameof(Summary));
-        _requestSave();
     }
 
     partial void OnSsidChanged(string value)
     {
         OnPropertyChanged(nameof(Summary));
+        OnPropertyChanged(nameof(HotspotError));
+        OnPropertyChanged(nameof(HasHotspotError));
+        OnPropertyChanged(nameof(CanStart));
         _requestSave();
     }
 
-    partial void OnPasswordChanged(string value) => _requestSave();
+    partial void OnPasswordChanged(string value)
+    {
+        OnPropertyChanged(nameof(HotspotError));
+        OnPropertyChanged(nameof(HasHotspotError));
+        OnPropertyChanged(nameof(CanStart));
+        _requestSave();
+    }
+
+    partial void OnSelectedHotspotAdapterChanged(AdapterItemViewModel? value)
+    {
+        // Seul un choix de l'utilisateur devient la préférence (pas le choix automatique ni la liste vidée par l'interface).
+        if (_selectingHotspotAdapter || value is null)
+        {
+            return;
+        }
+
+        _pendingHotspotAdapterId = value.Id;
+        _requestSave();
+    }
 
     partial void OnSelectedBandChanged(Option<WifiBand> value) => _requestSave();
 

@@ -93,6 +93,14 @@ internal static class WindowsScripts
             """;
     }
 
+    /// <summary>État du Point d'accès mobile pour la connexion source (« STATE:On » s'il émet déjà).</summary>
+    public static string QueryHotspotState(string adapterGuid) => WinRtPrelude + $$"""
+
+        $profile = Get-ShareProfile {{Quote(adapterGuid)}}
+        $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+        "STATE:$($mgr.TetheringOperationalState)"
+        """;
+
     public static string StopHotspot() => WinRtPrelude + """
 
         $p = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
@@ -161,7 +169,7 @@ internal static class WindowsScripts
 
     public static string ConfigureTarget(int index, IPAddress address, int prefix) => $$"""
         $i = {{index}}
-        Set-NetIPInterface -InterfaceIndex $i -Dhcp Disabled -Forwarding Enabled
+        Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -Forwarding Enabled
         Get-NetRoute -InterfaceIndex $i -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
         Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
         $null = New-NetIPAddress -InterfaceIndex $i -IPAddress {{Quote(address.ToString())}} -PrefixLength {{prefix}}
@@ -175,7 +183,7 @@ internal static class WindowsScripts
         script.AppendLine("Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue");
         if (state.Dhcp || state.Addrs.Count == 0)
         {
-            script.AppendLine("Set-NetIPInterface -InterfaceIndex $i -Dhcp Enabled");
+            script.AppendLine("Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Enabled");
             script.AppendLine(CultureInfo.InvariantCulture, $"try {{ ipconfig /renew {Quote(adapterName)} | Out-Null }} catch {{ }}");
         }
         else
@@ -190,7 +198,7 @@ internal static class WindowsScripts
         }
 
         script.AppendLine(CultureInfo.InvariantCulture,
-            $"Set-NetIPInterface -InterfaceIndex $i -Forwarding {(state.Forwarding ? "Enabled" : "Disabled")}");
+            $"Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Forwarding {(state.Forwarding ? "Enabled" : "Disabled")}");
         return script.ToString();
     }
 

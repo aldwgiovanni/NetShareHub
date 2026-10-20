@@ -76,7 +76,7 @@
               <TextBlock Classes="title" Text="Hotspot Wi-Fi" />
               <TextBlock Classes="muted" Text="Transforme cet ordinateur en point d'accès : téléphones, tablettes et autres PC se connectent avec le nom et le mot de passe ci-dessous." />
             </StackPanel>
-            <ToggleSwitch Grid.Column="1" IsChecked="{Binding HotspotEnabled}" IsEnabled="{Binding CanToggleHotspot}"
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding IsHotspotOn}" IsEnabled="{Binding CanToggleHotspot}"
                           OnContent="" OffContent="" VerticalAlignment="Top" />
           </Grid>
 
@@ -85,10 +85,12 @@
           </Border>
 
           <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="14" RowSpacing="10"
-                IsVisible="{Binding HotspotEnabled}" IsEnabled="{Binding CanConfigure}">
+                IsVisible="{Binding IsHotspotOn}" IsEnabled="{Binding CanConfigure}">
             <StackPanel>
               <TextBlock Classes="label" Text="Nom du réseau (SSID)" />
               <TextBox Text="{Binding Ssid}" MaxLength="32" />
+              <TextBlock Classes="muted" Text="{Binding HotspotError}" IsVisible="{Binding HasHotspotError}" TextWrapping="Wrap"
+                         Foreground="{DynamicResource WarnBrush}" Margin="0,4,0,0" />
             </StackPanel>
             <StackPanel Grid.Column="1">
               <TextBlock Classes="label" Text="Bande" />

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using NetShareHub.Application.Contracts.Persistence;
 using NetShareHub.Domain.Dtos.Incoming;
 using NetShareHub.Domain.Dtos.Outgoing;
+using NetShareHub.Domain.Enums;
 using NetShareHub.Infrastructure.Services;
 
 namespace NetShareHub.Infrastructure.Repositories;
@@ -32,7 +33,7 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
 
     public async Task<AppSettings_OutDto> GetAsync(CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!File.Exists(_path))
@@ -41,14 +42,14 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
             }
 
             await using var stream = File.OpenRead(_path);
-            var document = await JsonSerializer.DeserializeAsync<Document>(stream, JsonOptions, cancellationToken);
+            var document = await JsonSerializer.DeserializeAsync<Document>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
             return document is null
                 ? new AppSettings_OutDto()
                 : new AppSettings_OutDto
                 {
-                    Sharing = document.Sharing ?? new SharingRequest_InDto(),
+                    Sharing = Normalize(document.Sharing),
                     HotspotEnabled = document.HotspotEnabled,
-                    Dispatch = document.Dispatch ?? new DispatchConfig_InDto(),
+                    Dispatch = Normalize(document.Dispatch),
                 };
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
@@ -64,7 +65,9 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
 
     public async Task SaveAsync(AppSettings_InDto settings, CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        // ConfigureAwait(false) : un enregistrement synchrone à la fermeture (thread d'interface bloqué) ne doit pas
+        // attendre qu'un enregistrement différé, démarré sur ce même thread, y reprenne la main.
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var directory = Path.GetDirectoryName(_path)!;
@@ -78,7 +81,7 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
                 Dispatch = settings.Dispatch,
             };
 
-            await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(document, JsonOptions), cancellationToken);
+            await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(document, JsonOptions), cancellationToken).ConfigureAwait(false);
             if (!OperatingSystem.IsWindows())
             {
                 // Le fichier peut contenir le mot de passe du hotspot : lecture réservée au propriétaire.
@@ -98,6 +101,42 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
             _gate.Release();
         }
     }
+
+    // Un fichier modifié à la main (ou écrit par une autre version) peut contenir des null, des listes à trous ou des
+    // valeurs d'énumération hors plage (JsonStringEnumConverter accepte les entiers) : on les ramène à des valeurs sûres.
+    private static SharingRequest_InDto Normalize(SharingRequest_InDto? sharing)
+    {
+        sharing ??= new SharingRequest_InDto();
+        sharing.SourceAdapterIds = CleanIds(sharing.SourceAdapterIds);
+        sharing.TargetAdapterIds = CleanIds(sharing.TargetAdapterIds);
+        sharing.SourceWeights = (sharing.SourceWeights ?? new Dictionary<string, int>())
+            .Where(w => !string.IsNullOrWhiteSpace(w.Key))
+            .ToDictionary(w => w.Key, w => Math.Clamp(w.Value, 1, 10));
+        if (sharing.Hotspot is { } hotspot)
+        {
+            hotspot.Ssid = string.IsNullOrWhiteSpace(hotspot.Ssid) ? new WifiHotspot_InDto().Ssid : hotspot.Ssid;
+            hotspot.Password ??= string.Empty;
+            hotspot.Band = Enum.IsDefined(hotspot.Band) ? hotspot.Band : WifiBand.Auto;
+        }
+
+        return sharing;
+    }
+
+    private static DispatchConfig_InDto Normalize(DispatchConfig_InDto? dispatch)
+    {
+        var defaults = new DispatchConfig_InDto();
+        dispatch ??= defaults;
+        dispatch.Uplinks = (dispatch.Uplinks ?? new List<DispatchUplink_InDto>())
+            .Where(u => u is not null && !string.IsNullOrWhiteSpace(u.AdapterId))
+            .ToList();
+        dispatch.Strategy = Enum.IsDefined(dispatch.Strategy) ? dispatch.Strategy : defaults.Strategy;
+        dispatch.Port = dispatch.Port is >= 1 and <= 65535 ? dispatch.Port : defaults.Port;
+        dispatch.StickyMinutes = dispatch.StickyMinutes is >= 1 and <= 240 ? dispatch.StickyMinutes : defaults.StickyMinutes;
+        return dispatch;
+    }
+
+    private static List<string> CleanIds(List<string>? ids)
+        => (ids ?? new List<string>()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
     // Modèle de persistance : distinct des DTO pour pouvoir faire évoluer le fichier sans toucher aux contrats.
     private sealed class Document

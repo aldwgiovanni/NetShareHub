@@ -474,7 +474,7 @@ public class WindowsSharingBackendTests
         var restoreStatic = runner.Commands.Single(c => c.Description == "Restauration de la configuration de Ethernet");
         Assert.Contains("New-NetIPAddress -InterfaceIndex $i -IPAddress '192.168.50.2' -PrefixLength 24", restoreStatic.Script);
         var restoreDhcp = runner.Commands.Single(c => c.Description == "Restauration de la configuration de Ethernet 2");
-        Assert.Contains("Set-NetIPInterface -InterfaceIndex $i -Dhcp Enabled", restoreDhcp.Script);
+        Assert.Contains("Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Enabled", restoreDhcp.Script);
         Assert.Contains(runner.Commands, c => c.Description == "Suppression du NAT NetShare Hub");
     }
 

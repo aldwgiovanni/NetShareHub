@@ -49,6 +49,9 @@ internal sealed class ProxyConnectException : Exception
     }
 
     public byte SocksCode { get; }
+
+    /// <summary>Vrai si la destination n'a pas répondu à temps (HTTP 504 plutôt que 502).</summary>
+    public bool TimedOut { get; init; }
 }
 
 internal sealed record ProxyCredentials(string Username, string Password);
@@ -60,6 +63,10 @@ internal sealed record ProxyCredentials(string Username, string Password);
 internal sealed class ProxySession
 {
     private const int HandshakeTimeoutSeconds = 20;
+
+    /// <summary>Temps laissé par défaut au répartiteur pour joindre la destination (plusieurs liaisons, plusieurs adresses).</summary>
+    private static readonly TimeSpan DefaultConnectBudget = TimeSpan.FromSeconds(45);
+
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan HalfClosedIdleTimeout = TimeSpan.FromSeconds(60);
 
@@ -73,18 +80,22 @@ internal sealed class ProxySession
     private readonly ProxyReader _reader;
     private readonly IUpstreamConnector _connector;
     private readonly ProxyCredentials? _credentials;
+    private readonly TimeSpan _connectBudget;
+    private CancellationToken _serviceToken;
 
-    public ProxySession(Socket client, IUpstreamConnector connector, ProxyCredentials? credentials)
+    public ProxySession(Socket client, IUpstreamConnector connector, ProxyCredentials? credentials, TimeSpan? connectBudget = null)
     {
         _client = client;
         _clientStream = new NetworkStream(client, ownsSocket: false);
         _reader = new ProxyReader(_clientStream);
         _connector = connector;
         _credentials = credentials;
+        _connectBudget = connectBudget ?? DefaultConnectBudget;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        _serviceToken = cancellationToken;
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         handshake.CancelAfter(TimeSpan.FromSeconds(HandshakeTimeoutSeconds));
 
@@ -177,17 +188,11 @@ internal sealed class ProxySession
             return null;
         }
 
-        try
-        {
-            var upstream = await _connector.ConnectAsync(host, port, ct);
-            await ReplySocks5Async(0, upstream.LocalEndPoint, ct);
-            return upstream;
-        }
-        catch (ProxyConnectException ex)
-        {
-            await ReplySocks5Async(ex.SocksCode, null, ct);
-            return null;
-        }
+        return await ConnectAsync(
+            host,
+            port,
+            (upstream, token) => ReplySocks5Async(0, upstream.LocalEndPoint, token),
+            (ex, token) => ReplySocks5Async(ex.SocksCode, null, token));
     }
 
     private async Task<bool> AuthenticateSocks5Async(CancellationToken ct)
@@ -263,17 +268,11 @@ internal sealed class ProxySession
                 return null;
             }
 
-            try
-            {
-                var upstream = await _connector.ConnectAsync(host, port, ct);
-                await _clientStream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 Connection Established\r\n\r\n"), ct);
-                return upstream;
-            }
-            catch (ProxyConnectException ex)
-            {
-                await WriteHttpAsync("502 Bad Gateway", ex.Message, ct);
-                return null;
-            }
+            return await ConnectAsync(
+                host,
+                port,
+                async (_, token) => await _clientStream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 Connection Established\r\n\r\n"), token),
+                RefuseHttpAsync);
         }
 
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp)
@@ -282,34 +281,35 @@ internal sealed class ProxySession
             return null;
         }
 
-        try
+        // Réécriture en forme « origine » ; Connection: close car on ne gère qu'une requête par connexion.
+        var rewritten = new StringBuilder();
+        rewritten.Append(method).Append(' ').Append(uri.PathAndQuery).Append(' ').Append(version).Append("\r\n");
+        foreach (var header in headers)
         {
-            var upstream = await _connector.ConnectAsync(uri.Host, uri.Port, ct);
-
-            // Réécriture en forme « origine » ; Connection: close car on ne gère qu'une requête par connexion.
-            var rewritten = new StringBuilder();
-            rewritten.Append(method).Append(' ').Append(uri.PathAndQuery).Append(' ').Append(version).Append("\r\n");
-            foreach (var header in headers)
+            var name = header.Split(':', 2)[0].Trim();
+            if (!HopByHopHeaders.Contains(name))
             {
-                var name = header.Split(':', 2)[0].Trim();
-                if (!HopByHopHeaders.Contains(name))
-                {
-                    rewritten.Append(header).Append("\r\n");
-                }
+                rewritten.Append(header).Append("\r\n");
             }
+        }
 
-            rewritten.Append("Connection: close\r\n\r\n");
-            var bytes = Encoding.Latin1.GetBytes(rewritten.ToString());
-            await upstream.Socket.SendAsync(bytes, SocketFlags.None, ct);
-            upstream.CountSent(bytes.Length);
-            return upstream;
-        }
-        catch (ProxyConnectException ex)
-        {
-            await WriteHttpAsync("502 Bad Gateway", ex.Message, ct);
-            return null;
-        }
+        rewritten.Append("Connection: close\r\n\r\n");
+        var bytes = Encoding.Latin1.GetBytes(rewritten.ToString());
+
+        return await ConnectAsync(
+            uri.Host,
+            uri.Port,
+            async (upstream, token) =>
+            {
+                await upstream.Socket.SendAsync(bytes, SocketFlags.None, token);
+                upstream.CountSent(bytes.Length);
+            },
+            RefuseHttpAsync);
     }
+
+    // Une destination muette devient 504 ; les autres échecs, 502.
+    private Task RefuseHttpAsync(ProxyConnectException ex, CancellationToken ct)
+        => WriteHttpAsync(ex.TimedOut ? "504 Gateway Timeout" : "502 Bad Gateway", ex.Message, ct);
 
     private bool HttpAuthorized(IEnumerable<string> headers)
     {
@@ -389,6 +389,51 @@ internal sealed class ProxySession
                    (extraHeader is null ? string.Empty : extraHeader + "\r\n") + "Connection: close\r\n\r\n";
         await _clientStream.WriteAsync(Encoding.ASCII.GetBytes(head), ct);
         await _clientStream.WriteAsync(payload, ct);
+    }
+
+    // --- Connexion sortante -----------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Demande une connexion sortante puis l'annonce au client. Le délai de négociation ne s'applique pas ici : essayer
+    /// plusieurs liaisons peut prendre plus longtemps, et un client doit toujours recevoir une réponse (0x04 / 504) plutôt
+    /// qu'une coupure muette. Si l'annonce échoue (client parti), la connexion sortante est libérée aussitôt.
+    /// </summary>
+    private async Task<UpstreamConnection?> ConnectAsync(
+        string host,
+        int port,
+        Func<UpstreamConnection, CancellationToken, Task> announce,
+        Func<ProxyConnectException, CancellationToken, Task> refuse)
+    {
+        UpstreamConnection upstream;
+        using (var connect = CancellationTokenSource.CreateLinkedTokenSource(_serviceToken))
+        {
+            connect.CancelAfter(_connectBudget);
+            try
+            {
+                upstream = await _connector.ConnectAsync(host, port, connect.Token);
+            }
+            catch (ProxyConnectException ex)
+            {
+                await refuse(ex, _serviceToken);
+                return null;
+            }
+            catch (OperationCanceledException) when (!_serviceToken.IsCancellationRequested)
+            {
+                await refuse(new ProxyConnectException($"Délai dépassé pour joindre {host}:{port}.", 4) { TimedOut = true }, _serviceToken);
+                return null;
+            }
+        }
+
+        try
+        {
+            await announce(upstream, _serviceToken);
+            return upstream;
+        }
+        catch
+        {
+            upstream.Dispose();
+            throw;
+        }
     }
 
     // --- Relais ------------------------------------------------------------------------------------------------

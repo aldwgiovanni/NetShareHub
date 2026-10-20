@@ -35,6 +35,10 @@ public sealed class DhcpLeaseTable
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, Lease> _byMac = new(StringComparer.OrdinalIgnoreCase);
+
+    // Adresses refusées par un client (DHCPDECLINE : déjà utilisées sur le réseau) : écartées un moment, sinon elles seraient
+    // reproposées aussitôt et le client bouclerait sans fin entre offre et refus.
+    private readonly Dictionary<uint, DateTimeOffset> _quarantine = new();
     private readonly Func<DateTimeOffset> _clock;
     private readonly uint _start;
     private readonly uint _end;
@@ -120,8 +124,29 @@ public sealed class DhcpLeaseTable
         }
     }
 
+    /// <summary>Le client signale que l'adresse est déjà utilisée : son bail est annulé et l'adresse mise en quarantaine.</summary>
+    public void Decline(string mac, IPAddress? address)
+    {
+        lock (_gate)
+        {
+            if (_byMac.Remove(mac, out var lease))
+            {
+                address ??= lease.Address;
+            }
+
+            if (address is not null && InRange(address))
+            {
+                _quarantine[Ipv4Subnet.ToUInt(address)] = _clock() + QuarantineTime;
+            }
+        }
+    }
+
+    /// <summary>Durée pendant laquelle une adresse refusée n'est plus proposée.</summary>
+    public static TimeSpan QuarantineTime { get; } = TimeSpan.FromMinutes(10);
+
     private bool IsFree(IPAddress address, string mac)
-        => !_byMac.Any(kv => kv.Value.Address.Equals(address) && !kv.Key.Equals(mac, StringComparison.OrdinalIgnoreCase));
+        => !_quarantine.ContainsKey(Ipv4Subnet.ToUInt(address))
+           && !_byMac.Any(kv => kv.Value.Address.Equals(address) && !kv.Key.Equals(mac, StringComparison.OrdinalIgnoreCase));
 
     private void Purge()
     {
@@ -129,6 +154,11 @@ public sealed class DhcpLeaseTable
         foreach (var mac in _byMac.Where(kv => kv.Value.Expires <= now).Select(kv => kv.Key).ToList())
         {
             _byMac.Remove(mac);
+        }
+
+        foreach (var address in _quarantine.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList())
+        {
+            _quarantine.Remove(address);
         }
     }
 
@@ -178,8 +208,17 @@ public static class DhcpEngine
             }
 
             case DhcpMessageType.Release:
-            case DhcpMessageType.Decline:
                 table.Release(mac);
+                return null;
+
+            case DhcpMessageType.Decline:
+                // Un DECLINE ne vaut que pour nous : celui adressé à un autre serveur DHCP ne nous concerne pas.
+                if (request.ServerIdentifier is { } server && !server.Equals(scope.ServerAddress))
+                {
+                    return null;
+                }
+
+                table.Decline(mac, request.RequestedIp);
                 return null;
 
             default:

@@ -22,6 +22,7 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
     private const int MaxClientConnections = 4096;
     private const int ConnectTimeoutMs = 8000;
     private const int FailuresBeforeDown = 3;
+    private const int MaxHostNameLength = 253;
     private static readonly TimeSpan HealthInterval = TimeSpan.FromSeconds(5);
 
     private static readonly IPEndPoint[] ProbeTargets =
@@ -67,81 +68,119 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
                 throw new DispatchException("Le Dispatch est déjà démarré.");
             }
 
-            if (config.Port is < 0 or > 65535)
-            {
-                throw new DispatchException("Le port doit être compris entre 1 et 65535.");
-            }
-
-            var adapters = _inventory.Snapshot;
-            var uplinks = config.Uplinks.Where(u => u.Enabled).ToList();
-            if (uplinks.Count == 0)
-            {
-                throw new DispatchException("Choisissez au moins une connexion Internet à utiliser.");
-            }
-
-            foreach (var uplink in uplinks)
-            {
-                var adapter = adapters.FirstOrDefault(a => a.Id.Equals(uplink.AdapterId, StringComparison.OrdinalIgnoreCase));
-                if (adapter is null || !adapter.HasInternetRoute)
-                {
-                    throw new DispatchException($"La connexion « {adapter?.Name ?? uplink.AdapterId} » n'a pas d'accès Internet actif.");
-                }
-            }
-
-            var hasUser = !string.IsNullOrEmpty(config.Username);
-            if (hasUser && string.IsNullOrEmpty(config.Password))
-            {
-                throw new DispatchException("Renseignez aussi un mot de passe, ou laissez l'identifiant vide pour un proxy ouvert.");
-            }
-
-            _credentials = hasUser ? new ProxyCredentials(config.Username!, config.Password!) : null;
-            _config = config;
-            _message = "Démarrage…";
-            _state = RunState.Starting;
-
-            _balancer = new UplinkBalancer(
-                config.Strategy,
-                config.StickyDestinations ? TimeSpan.FromMinutes(Math.Clamp(config.StickyMinutes, 1, 240)) : null);
-            _balancer.SetUplinks(config.Uplinks.Select(u => (u.AdapterId, u.Weight, u.Enabled)));
-            _runtimes = config.Uplinks.ToDictionary(
-                u => u.AdapterId,
-                u => new UplinkRuntime(u.AdapterId, u.Weight, u.Enabled),
-                StringComparer.OrdinalIgnoreCase);
-
-            var address = config.AllowLan ? IPAddress.Any : IPAddress.Loopback;
-            var listener = new TcpListener(address, config.Port);
             try
             {
-                listener.Start(512);
+                StartCore(config);
             }
-            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressAlreadyInUse or SocketError.AccessDenied)
+            catch (Exception ex)
             {
+                // Quel que soit l'échec, le service ne doit pas rester bloqué sur « Démarrage… » : il refuserait tout nouvel essai.
+                await StopCoreAsync();
                 _state = RunState.Faulted;
-                _message = $"Le port {config.Port} est déjà utilisé par un autre programme.";
+                _message = ex is DispatchException ? ex.Message : $"Démarrage impossible : {ex.Message}";
+                _logger.LogError("Échec du démarrage du Dispatch : {Message}", _message);
+                if (ex is DispatchException)
+                {
+                    throw;
+                }
+
                 throw new DispatchException(_message, ex);
             }
-
-            _listener = listener;
-            _cts = new CancellationTokenSource();
-            var token = _cts.Token;
-            _background = new List<Task>
-            {
-                Task.Run(() => AcceptLoopAsync(listener, token), CancellationToken.None),
-                Task.Run(() => HealthLoopAsync(token), CancellationToken.None),
-                Task.Run(() => RateLoopAsync(token), CancellationToken.None),
-            };
-
-            _state = RunState.Running;
-            _message = "Dispatch actif.";
-            _logger.LogInformation(
-                "Dispatch démarré sur {Address}:{Port} ({Strategy}, {Count} liaisons)",
-                address, BoundPort, config.Strategy, uplinks.Count);
         }
         finally
         {
             _lifecycle.Release();
         }
     }
+
+    private void StartCore(DispatchConfig_InDto config)
+    {
+        if (config.Port is < 0 or > 65535)
+        {
+            throw new DispatchException("Le port doit être compris entre 1 et 65535.");
+        }
+
+        var adapters = _inventory.Snapshot;
+        var uplinks = config.Uplinks.Where(u => u.Enabled).ToList();
+        if (uplinks.Count == 0)
+        {
+            throw new DispatchException("Choisissez au moins une connexion Internet à utiliser.");
+        }
+
+        foreach (var uplink in uplinks)
+        {
+            var adapter = adapters.FirstOrDefault(a => a.Id.Equals(uplink.AdapterId, StringComparison.OrdinalIgnoreCase));
+            if (adapter is null || !adapter.HasInternetRoute)
+            {
+                throw new DispatchException($"La connexion « {adapter?.Name ?? uplink.AdapterId} » n'a pas d'accès Internet actif.");
+            }
+        }
+
+        var hasUser = !string.IsNullOrEmpty(config.Username);
+        if (hasUser && string.IsNullOrEmpty(config.Password))
+        {
+            throw new DispatchException("Renseignez aussi un mot de passe, ou laissez l'identifiant vide pour un proxy ouvert.");
+        }
+
+        _credentials = hasUser ? new ProxyCredentials(config.Username!, config.Password!) : null;
+        _config = config;
+        _message = "Démarrage…";
+        _state = RunState.Starting;
+
+        // Une même liaison cochée deux fois ne compte qu'une fois.
+        var distinct = config.Uplinks.DistinctBy(u => u.AdapterId, StringComparer.OrdinalIgnoreCase).ToList();
+        _balancer = new UplinkBalancer(
+            config.Strategy,
+            config.StickyDestinations ? TimeSpan.FromMinutes(Math.Clamp(config.StickyMinutes, 1, 240)) : null);
+        _balancer.SetUplinks(distinct.Select(u => (u.AdapterId, u.Weight, u.Enabled)));
+        _runtimes = distinct.ToDictionary(
+            u => u.AdapterId,
+            u => new UplinkRuntime(u.AdapterId, u.Weight, u.Enabled),
+            StringComparer.OrdinalIgnoreCase);
+
+        var address = config.AllowLan ? IPAddress.Any : IPAddress.Loopback;
+        var listener = new TcpListener(address, config.Port);
+        try
+        {
+            listener.Start(512);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        {
+            throw new DispatchException($"Le port {config.Port} est déjà utilisé par un autre programme.", ex);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AccessDenied)
+        {
+            throw new DispatchException(
+                $"Le système refuse l'ouverture du port {config.Port} : il est réservé (Windows réserve des plages pour Hyper-V, WSL " +
+                "ou Docker) ou demande des droits administrateur (ports inférieurs à 1024 sous Linux). Choisissez un autre port.",
+                ex);
+        }
+
+        _listener = listener;
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
+        _background = new List<Task>
+        {
+            Task.Run(() => AcceptLoopAsync(listener, token), CancellationToken.None),
+            Task.Run(() => HealthLoopAsync(token), CancellationToken.None),
+            Task.Run(() => RateLoopAsync(token), CancellationToken.None),
+        };
+
+        _state = RunState.Running;
+        _message = "Dispatch actif.";
+        _logger.LogInformation(
+            "Dispatch démarré sur {Address}:{Port} ({Strategy}, {Uplinks})",
+            address, BoundPort, StrategyLabel(config.Strategy), uplinks.Count == 1 ? "1 liaison" : $"{uplinks.Count} liaisons");
+    }
+
+    /// <summary>Libellé de la stratégie pour le journal (le même que dans l'interface).</summary>
+    internal static string StrategyLabel(DispatchStrategy strategy) => strategy switch
+    {
+        DispatchStrategy.WeightedRoundRobin => "répartition équilibrée",
+        DispatchStrategy.LeastConnections => "moins chargée d'abord",
+        DispatchStrategy.Failover => "secours (basculement)",
+        _ => strategy.ToString(),
+    };
 
     public async Task StopAsync()
     {
@@ -195,7 +234,7 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
             status.ClientEndpoints = ClientEndpoints(config.AllowLan, BoundPort, adapters);
         }
 
-        foreach (var uplink in config.Uplinks)
+        foreach (var uplink in config.Uplinks.DistinctBy(u => u.AdapterId, StringComparer.OrdinalIgnoreCase))
         {
             if (!_runtimes.TryGetValue(uplink.AdapterId, out var runtime))
             {
@@ -310,6 +349,17 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
     {
         var balancer = _balancer ?? throw new ProxyConnectException("Dispatch arrêté.", 1);
 
+        // Destinations impossibles : refusées ici, sans essayer (et sans pénaliser) les liaisons.
+        if (port is < 1 or > 65535)
+        {
+            throw new ProxyConnectException($"Port de destination invalide : {port}.", 2);
+        }
+
+        if (string.IsNullOrWhiteSpace(host) || host.Length > MaxHostNameLength)
+        {
+            throw new ProxyConnectException("Nom d'hôte de destination invalide.", 4);
+        }
+
         var addresses = await ResolveAsync(host, cancellationToken);
         var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? lastError = null;
@@ -370,7 +420,11 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
                 }
 
                 Interlocked.Increment(ref runtime.Failed);
-                if (Interlocked.Increment(ref runtime.ConsecutiveFailures) >= FailuresBeforeDown)
+
+                // Seule une erreur qui met en cause la liaison elle-même la rapproche de « hors service ». Une destination
+                // injoignable ou muette (pare-feu, serveur arrêté) échouerait sur toutes les liaisons : la compter ferait tomber
+                // toutes les liaisons saines en quelques requêtes. Les vraies pannes sont détectées par les sondes de santé.
+                if (IsUplinkFailure(ex) && Interlocked.Increment(ref runtime.ConsecutiveFailures) >= FailuresBeforeDown)
                 {
                     MarkDown(adapterId, "échecs de connexion répétés");
                 }
@@ -437,6 +491,15 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
             throw new ProxyConnectException($"Nom introuvable : {host}.", 4, ex);
         }
     }
+
+    /// <summary>Vrai si l'échec vient de la liaison (réseau absent, adaptateur inutilisable) et non de la destination.</summary>
+    internal static bool IsUplinkFailure(Exception ex) => ex switch
+    {
+        SocketException se => se.SocketErrorCode is SocketError.NetworkDown or SocketError.NetworkUnreachable
+            or SocketError.NetworkReset or SocketError.NoBufferSpaceAvailable,
+        DispatchException => true, // forçage de l'interface impossible (adaptateur disparu, adresse perdue)
+        _ => false,
+    };
 
     private static byte SocksCodeFor(SocketError error) => error switch
     {

@@ -43,14 +43,48 @@ public sealed partial class AdapterCatalog : ObservableObject
     /// <summary>Levé quand la sélection ou un poids change (pour enregistrer les préférences).</summary>
     public event EventHandler? SelectionChanged;
 
+    /// <summary>
+    /// Levé après une actualisation des adaptateurs : la sélection effective (cochée et disponible) a pu changer.
+    /// Ne demande pas d'enregistrement, pour ne pas oublier la sélection d'un adaptateur momentanément absent.
+    /// </summary>
+    public event EventHandler? AvailabilityChanged;
+
+    /// <summary>Sources à enregistrer : celles cochées, plus celles mémorisées dont l'adaptateur est absent (USB débranché…).</summary>
+    public IReadOnlyList<string> RememberedSourceIds => Remembered(_restoredSources, SelectedSources);
+
+    /// <summary>Cibles à enregistrer : celles cochées, plus celles mémorisées dont l'adaptateur est absent.</summary>
+    public IReadOnlyList<string> RememberedTargetIds => Remembered(_restoredTargets, SelectedTargets);
+
+    /// <summary>Poids des sources à enregistrer, y compris ceux des adaptateurs absents.</summary>
+    public Dictionary<string, int> RememberedSourceWeights
+    {
+        get
+        {
+            var present = _all.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+            return RememberedSourceIds.ToDictionary(
+                id => id,
+                id => present.TryGetValue(id, out var item) ? item.WeightValue : Math.Clamp(_restoredWeights.GetValueOrDefault(id, 1), 1, 10),
+                StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     public void Restore(SharingRequest_InDto sharing, DispatchConfig_InDto dispatch)
     {
-        _restoredSources = new HashSet<string>(sharing.SourceAdapterIds, StringComparer.OrdinalIgnoreCase);
-        _restoredTargets = new HashSet<string>(sharing.TargetAdapterIds, StringComparer.OrdinalIgnoreCase);
-        _restoredWeights = new Dictionary<string, int>(sharing.SourceWeights, StringComparer.OrdinalIgnoreCase);
-        foreach (var uplink in dispatch.Uplinks)
+        // Tolère des préférences partielles (listes absentes ou à trous) : elles ne doivent pas empêcher le démarrage.
+        _restoredSources = new HashSet<string>((sharing.SourceAdapterIds ?? new()).OfType<string>(), StringComparer.OrdinalIgnoreCase);
+        _restoredTargets = new HashSet<string>((sharing.TargetAdapterIds ?? new()).OfType<string>(), StringComparer.OrdinalIgnoreCase);
+        _restoredWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, weight) in sharing.SourceWeights ?? new())
         {
-            _restoredWeights.TryAdd(uplink.AdapterId, uplink.Weight);
+            _restoredWeights[id] = weight;
+        }
+
+        foreach (var uplink in (dispatch.Uplinks ?? new()).OfType<DispatchUplink_InDto>())
+        {
+            if (!string.IsNullOrEmpty(uplink.AdapterId))
+            {
+                _restoredWeights.TryAdd(uplink.AdapterId, uplink.Weight);
+            }
         }
 
         _hasRestoredSelection = _restoredSources.Count > 0 || _restoredTargets.Count > 0;
@@ -79,6 +113,10 @@ public sealed partial class AdapterCatalog : ObservableObject
             {
                 // Première utilisation : toutes les connexions Internet réelles sont cochées.
                 item.IsSource = dto.CanBeSource && !dto.IsVirtual;
+                if (item.IsSource)
+                {
+                    _restoredSources.Add(dto.Id);
+                }
             }
 
             if (_restoredWeights.TryGetValue(dto.Id, out var weight))
@@ -97,7 +135,9 @@ public sealed partial class AdapterCatalog : ObservableObject
             _all.Remove(gone);
         }
 
+        _hasRestoredSelection = _restoredSources.Count > 0 || _restoredTargets.Count > 0;
         Rebuild();
+        AvailabilityChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Met à jour les débits et la santé affichés sur chaque ligne.</summary>
@@ -169,11 +209,49 @@ public sealed partial class AdapterCatalog : ObservableObject
         }
     }
 
+    // Ordre de l'interface d'abord, puis les adaptateurs mémorisés mais absents ou momentanément sans Internet.
+    private static IReadOnlyList<string> Remembered(HashSet<string> remembered, IEnumerable<AdapterItemViewModel> selected)
+        => selected.Select(a => a.Id)
+            .Concat(remembered)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     private void OnItemChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(AdapterItemViewModel.IsSource) or nameof(AdapterItemViewModel.IsTarget) or nameof(AdapterItemViewModel.Weight))
+        if (sender is not AdapterItemViewModel item)
         {
-            SelectionChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        // La sélection mémorisée suit l'utilisateur : un adaptateur rebranché retrouve son dernier état, pas celui du lancement.
+        switch (e.PropertyName)
+        {
+            case nameof(AdapterItemViewModel.IsSource):
+                Remember(_restoredSources, item.Id, item.IsSource);
+                break;
+            case nameof(AdapterItemViewModel.IsTarget):
+                Remember(_restoredTargets, item.Id, item.IsTarget);
+                break;
+            case nameof(AdapterItemViewModel.Weight):
+                _restoredWeights[item.Id] = item.WeightValue;
+                break;
+            default:
+                return;
+        }
+
+        _hasRestoredSelection = _restoredSources.Count > 0 || _restoredTargets.Count > 0;
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static void Remember(HashSet<string> set, string id, bool selected)
+    {
+        if (selected)
+        {
+            set.Add(id);
+        }
+        else
+        {
+            set.Remove(id);
         }
     }
 }

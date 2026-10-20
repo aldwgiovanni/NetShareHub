@@ -93,6 +93,8 @@
             <StackPanel>
               <TextBlock Classes="label" Text="Port" />
               <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535" Increment="1" FormatString="0" HorizontalAlignment="Stretch" />
+              <TextBlock Classes="muted" Text="{Binding PortError}" IsVisible="{Binding HasPortError}" TextWrapping="Wrap"
+                         Foreground="{DynamicResource WarnBrush}" Margin="0,4,0,0" />
             </StackPanel>
             <StackPanel Grid.Column="1">
               <TextBlock Classes="label" Text="Mode de répartition" />

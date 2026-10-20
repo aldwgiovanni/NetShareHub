@@ -53,6 +53,9 @@ public sealed class PlatformInfo_OutDto
 
     public bool NetworkManagerAvailable { get; set; }
 
+    /// <summary>Une session de partage interrompue a laissé des modifications réseau à annuler (droits requis).</summary>
+    public bool HasPendingRecovery { get; set; }
+
     public List<string> Notes { get; set; } = new();
 }
 

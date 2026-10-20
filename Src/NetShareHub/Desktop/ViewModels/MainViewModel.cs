@@ -6,6 +6,7 @@ using NetShareHub.Application.Contracts.Persistence;
 using NetShareHub.Application.Contracts.Services;
 using NetShareHub.Desktop.Logging;
 using NetShareHub.Domain.Dtos.Incoming;
+using NetShareHub.Domain.Dtos.Outgoing;
 using NetShareHub.Domain.Enums;
 
 namespace NetShareHub.Desktop.ViewModels;
@@ -51,7 +52,7 @@ public sealed partial class MainViewModel : ObservableObject
         Catalog = catalog;
         IsElevated = privilege.IsElevated;
 
-        Sharing = new SharingViewModel(sharing, privilege, catalog, ScheduleSave, Elevate);
+        Sharing = new SharingViewModel(sharing, privilege, catalog, ScheduleSave, () => _ = ElevateAsync());
         Dispatch = new DispatchViewModel(dispatch, catalog, ScheduleSave);
         Log = new LogViewModel(logStore);
 
@@ -94,24 +95,46 @@ public sealed partial class MainViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
+        // D'abord défaire une session interrompue : aucune autre étape (préférences illisibles, sonde en échec) ne doit
+        // pouvoir laisser la configuration réseau modifiée.
         try
         {
-            var settings = await _settings.GetAsync();
+            if (_privilege.IsElevated && await _sharing.RecoverAsync())
+            {
+                _logger.LogWarning("Une session de partage précédente a été interrompue : la configuration réseau a été restaurée.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Restauration de la session précédente impossible");
+        }
+
+        _inventory.AdaptersChanged += (_, _) => Dispatcher.UIThread.Post(() => _ = RefreshAsync());
+
+        var settings = new AppSettings_OutDto();
+        try
+        {
+            settings = await _settings.GetAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Préférences illisibles, valeurs par défaut utilisées");
+        }
+
+        try
+        {
             Catalog.Restore(settings.Sharing, settings.Dispatch);
             Catalog.Apply(await _inventory.GetAdaptersAsync());
 
             var info = await _sharing.GetPlatformInfoAsync();
-            IsElevated = info.IsElevated;
-            PlatformText = DescribePlatform(info.Platform, info.OsDescription);
-            Sharing.ApplyPlatform(info);
+            ApplyPlatform(info);
             Sharing.Load(settings);
             Dispatch.Load(settings);
 
-            _inventory.AdaptersChanged += (_, _) => Dispatcher.UIThread.Post(() => _ = RefreshAsync());
-
-            if (IsElevated && await _sharing.RecoverAsync())
+            if (!IsElevated && info.HasPendingRecovery)
             {
-                _logger.LogWarning("Une session de partage précédente a été interrompue : la configuration réseau a été restaurée.");
+                _logger.LogWarning("Une session de partage précédente a été interrompue et a laissé la configuration réseau modifiée. " +
+                                   "Relancez en administrateur pour la restaurer.");
             }
 
             if (!IsElevated && info.Platform != HostPlatform.Unsupported)
@@ -136,6 +159,9 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             Catalog.Apply(await _inventory.GetAdaptersAsync());
+
+            // Une carte Wi-Fi branchée ou retirée change ce que la machine sait faire (hotspot) : on sonde à nouveau.
+            ApplyPlatform(await _sharing.GetPlatformInfoAsync());
             Sharing.SelectHotspotAdapter();
         }
         catch (Exception ex)
@@ -148,11 +174,18 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    private void ApplyPlatform(PlatformInfo_OutDto info)
+    {
+        IsElevated = info.IsElevated;
+        PlatformText = DescribePlatform(info.Platform, info.OsDescription);
+        Sharing.ApplyPlatform(info);
+    }
+
     [RelayCommand]
-    private void Elevate()
+    private async Task ElevateAsync()
     {
         SaveNow();
-        if (_privilege.TryRelaunchElevated())
+        if (await _privilege.TryRelaunchElevatedAsync())
         {
             RequestExit?.Invoke();
         }
@@ -165,24 +198,55 @@ public sealed partial class MainViewModel : ObservableObject
     /// <summary>Arrête proprement le Dispatch et le partage (la configuration réseau est restaurée).</summary>
     public async Task ShutdownAsync()
     {
-        SaveNow();
+        try
+        {
+            SaveNow();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Préférences non enregistrées à la fermeture");
+        }
+
+        // Chaque arrêt est indépendant : un Dispatch qui refuse de s'arrêter ne doit pas laisser le partage actif.
         try
         {
             await Dispatch.StopQuietlyAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Arrêt du Dispatch incomplet");
+        }
+
+        try
+        {
             await _sharing.StopAsync();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Arrêt incomplet");
+            _logger.LogError(ex, "Arrêt du partage incomplet");
         }
     }
 
-    private AppSettings_InDto BuildSettings() => new()
+    private AppSettings_InDto BuildSettings()
     {
-        Sharing = Sharing.BuildRequest(),
-        HotspotEnabled = Sharing.HotspotEnabled,
-        Dispatch = Dispatch.BuildConfig(),
-    };
+        var sharing = Sharing.BuildRequest();
+
+        // La sélection d'un adaptateur absent (clé USB, téléphone débranchés) est conservée pour le prochain branchement.
+        sharing.SourceAdapterIds = Catalog.RememberedSourceIds.ToList();
+        sharing.TargetAdapterIds = Catalog.RememberedTargetIds.ToList();
+        sharing.SourceWeights = Catalog.RememberedSourceWeights;
+        if (sharing.Hotspot is not null)
+        {
+            sharing.Hotspot.AdapterId = Sharing.PreferredHotspotAdapterId;
+        }
+
+        return new AppSettings_InDto
+        {
+            Sharing = sharing,
+            HotspotEnabled = Sharing.HotspotEnabled,
+            Dispatch = Dispatch.BuildConfig(),
+        };
+    }
 
     private void ScheduleSave()
     {

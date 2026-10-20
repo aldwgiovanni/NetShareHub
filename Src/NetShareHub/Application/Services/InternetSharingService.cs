@@ -50,6 +50,7 @@ public sealed class InternetSharingService : IInternetSharingService
             SupportsWifiHotspot = capabilities.SupportsWifiHotspot,
             SupportsTransparentBalancing = capabilities.SupportsTransparentBalancing,
             NetworkManagerAvailable = capabilities.NetworkManagerAvailable,
+            HasPendingRecovery = _backend.HasPendingRecovery,
             Notes = capabilities.Notes.ToList(),
         };
     }

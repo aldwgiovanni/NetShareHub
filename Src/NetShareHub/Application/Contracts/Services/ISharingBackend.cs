@@ -44,6 +44,9 @@ public interface ISharingBackend
     /// <summary>Annule toutes les modifications faites par <see cref="StartAsync"/>.</summary>
     Task StopAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>Vrai si une session précédente interrompue a laissé des modifications à annuler (voir <see cref="RecoverAsync"/>).</summary>
+    bool HasPendingRecovery => false;
+
     /// <summary>Annule les modifications laissées par une session précédente interrompue brutalement. Renvoie vrai si quelque chose a été annulé.</summary>
     Task<bool> RecoverAsync(CancellationToken cancellationToken = default);
 }

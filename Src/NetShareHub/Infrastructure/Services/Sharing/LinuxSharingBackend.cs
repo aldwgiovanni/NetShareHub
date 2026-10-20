@@ -48,6 +48,8 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         _journal = new UndoJournal(Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-linux.json"), runner, logger);
     }
 
+    public bool HasPendingRecovery => _journal.HasPending;
+
     public async Task<BackendCapabilities> ProbeAsync(CancellationToken cancellationToken = default)
     {
         if (_cachedCapabilities is not null && DateTimeOffset.UtcNow - _cachedAt < ProbeCacheDuration)

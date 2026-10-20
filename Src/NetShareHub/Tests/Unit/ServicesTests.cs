@@ -46,7 +46,7 @@ public class InternetSharingServiceTests
     {
         public bool IsElevated { get; } = elevated;
 
-        public bool TryRelaunchElevated() => false;
+        public Task<bool> TryRelaunchElevatedAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
     private sealed class FakePlatform : IPlatformInfo
