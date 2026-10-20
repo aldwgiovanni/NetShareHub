@@ -133,6 +133,8 @@
                 <TextBox Text="{Binding Password}" PasswordChar="●" />
               </StackPanel>
             </Grid>
+            <TextBlock Classes="muted" Margin="28,0,0,0" TextWrapping="Wrap" IsVisible="{Binding ShowCredentialsMissing}"
+                       Text="Renseignez un identifiant et un mot de passe pour démarrer, ou décochez la protection." />
           </StackPanel>
         </StackPanel>
       </Border>

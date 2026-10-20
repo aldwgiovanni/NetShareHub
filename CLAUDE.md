@@ -7,7 +7,7 @@ liaisons (proxy « Dispatch »). Voir `README.md` pour le produit.
 
 ```powershell
 dotnet build NetShareHub.slnx
-dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj        # 140 tests
+dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj        # 189 tests
 ./packaging/build.ps1 [-Targets win-x64,linux-x64,linux-arm64]    # → dist/
 ```
 
@@ -59,3 +59,19 @@ code livré complet et compilé, aucune logique métier dans la couche de prése
 - **NuGet** : le dépôt a son `nuget.config` (nuget.org seul) car la configuration globale de la machine contient un flux privé
   Azure DevOps qui répond 401 et fait échouer toute restauration de paquet non mis en cache.
 - **Chemins longs** : `dotnet`/MSBuild échouent si le répertoire courant dépasse MAX_PATH ; travailler via une jonction courte.
+
+## Règles de sécurité (l'application tourne en administrateur / root)
+
+- **Journal d'annulation** (`UndoJournal`) : rejoué en administrateur au lancement suivant. Il ne contient que des
+  opérations typées (`UndoStep` : enum + paramètres revalidés par `ToCommand`), jamais un exécutable ou un script libre.
+  Dossier protégé par `JournalSecurity` (Windows : SYSTEM + Administrateurs, sans héritage de `C:\ProgramData` ;
+  Linux : root 0700) ; un journal dont le propriétaire n'est pas l'administration, ou qui est un lien, est refusé.
+  Toute nouvelle annulation = un nouveau `UndoKind`, pas un `CommandSpec`.
+- **PowerShell** : toute donnée insérée dans un script passe par `WindowsScripts.Quote`, qui double aussi les apostrophes
+  typographiques U+2018–U+201B (PowerShell les traite comme `'`).
+- **Profil utilisateur sous Linux en root** : `~/.config` appartient à l'utilisateur. Écrire uniquement via
+  `AppPaths.WriteUserFileAsync` / `OpenUserFileForAppend` / `OpenUserFileForRead` (liens refusés, création exclusive,
+  `fchown`/`lchown`, contrôle du propriétaire par `fstat`), jamais `File.WriteAllText`/`AppendAllText` directement.
+- **Instance unique** : `SingleInstanceLock` (`Global\NetShareHub` / `flock /run/netsharehub.lock`) pris dans `Program.Main`.
+- **Dispatch** : un client venu du réseau ne peut joindre ni la machine (boucle locale, ses adresses, 0.0.0.0/8, 169.254/16,
+  224/3) ni un nom vide (`DispatchProxyService.IsHostDestination`).

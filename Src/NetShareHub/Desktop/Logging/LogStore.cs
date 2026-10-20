@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 using NetShareHub.Infrastructure.Services;
 
@@ -64,14 +65,15 @@ public sealed class LogStore
     {
         try
         {
-            AppPaths.EnsureUserDirectory(Path.GetDirectoryName(_filePath)!);
             var info = new FileInfo(_filePath);
             if (info.Exists && info.Length > MaxFileBytes)
             {
                 File.Move(_filePath, _filePath + ".1", overwrite: true);
             }
 
-            File.AppendAllText(_filePath, entry + Environment.NewLine);
+            // En root (pkexec), le dossier appartient à l'utilisateur : ouverture sans suivre un lien vers un fichier système.
+            using var stream = AppPaths.OpenUserFileForAppend(_filePath);
+            stream.Write(Encoding.UTF8.GetBytes(entry + Environment.NewLine));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

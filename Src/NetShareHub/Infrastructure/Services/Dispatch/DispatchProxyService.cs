@@ -46,6 +46,7 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
     private Dictionary<string, UplinkRuntime> _runtimes = new(StringComparer.OrdinalIgnoreCase);
     private ProxyCredentials? _credentials;
     private List<Task> _background = new();
+    private (DateTime At, IReadOnlySet<IPAddress> Addresses)? _localAddresses;
 
     public DispatchProxyService(INetworkInventoryService inventory, ISocketBinder binder, ILogger<DispatchProxyService> logger)
     {
@@ -283,7 +284,11 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
         {
             client.NoDelay = true;
             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-            await new ProxySession(client, this, _credentials).RunAsync(token);
+            // Un client venu du réseau (mode « Ouvert au réseau local ») ne doit pas atteindre les services de cette machine
+            // par le proxy : ce serait contourner le pare-feu et les services qui n'écoutent qu'en local.
+            var fromThisMachine = client.RemoteEndPoint is IPEndPoint remote && IPAddress.IsLoopback(remote.Address);
+            IUpstreamConnector connector = fromThisMachine ? this : new NetworkClientConnector(this);
+            await new ProxySession(client, connector, _credentials).RunAsync(token);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException or ObjectDisposedException
                                        or EndOfStreamException or InvalidDataException)
@@ -304,13 +309,24 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
     // --- Connexions sortantes (IUpstreamConnector) -----------------------------------------------------------
 
     Task<UpstreamConnection> IUpstreamConnector.ConnectAsync(string host, int port, CancellationToken cancellationToken)
-        => ConnectUpstreamAsync(host, port, cancellationToken);
+        => ConnectUpstreamAsync(host, port, fromNetwork: false, cancellationToken);
 
-    private async Task<UpstreamConnection> ConnectUpstreamAsync(string host, int port, CancellationToken cancellationToken)
+    private async Task<UpstreamConnection> ConnectUpstreamAsync(string host, int port, bool fromNetwork, CancellationToken cancellationToken)
     {
         var balancer = _balancer ?? throw new ProxyConnectException("Dispatch arrêté.", 1);
 
         var addresses = await ResolveAsync(host, cancellationToken);
+        if (fromNetwork)
+        {
+            // Filtre appliqué après résolution : un nom qui pointe vers 127.0.0.1 ou vers la machine est refusé lui aussi.
+            var local = LocalAddresses();
+            addresses = addresses.Where(a => !IsHostDestination(a, local)).ToList();
+            if (addresses.Count == 0)
+            {
+                throw new ProxyConnectException($"Destination refusée : {host} désigne cet ordinateur ou une adresse réservée.", 2);
+            }
+        }
+
         var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? lastError = null;
 
@@ -418,6 +434,12 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
 
     private static async Task<IReadOnlyList<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
     {
+        // Dns.GetHostAddressesAsync("") renvoie toutes les adresses de la machine : un nom vide n'est jamais une destination.
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            throw new ProxyConnectException("Nom de destination vide.", 2);
+        }
+
         if (IPAddress.TryParse(host, out var literal))
         {
             return literal.AddressFamily == AddressFamily.InterNetwork
@@ -436,6 +458,62 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
         {
             throw new ProxyConnectException($"Nom introuvable : {host}.", 4, ex);
         }
+    }
+
+    /// <summary>
+    /// Vrai pour une destination interdite à un client du réseau : boucle locale, 0.0.0.0/8, lien local (169.254/16),
+    /// multidiffusion et adresses réservées (224/3, dont 255.255.255.255), ou l'une des adresses de cette machine.
+    /// </summary>
+    internal static bool IsHostDestination(IPAddress address, IReadOnlySet<IPAddress> localAddresses)
+    {
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (IPAddress.IsLoopback(address) || localAddresses.Contains(address))
+        {
+            return true;
+        }
+
+        if (address.AddressFamily != AddressFamily.InterNetwork)
+        {
+            return true; // les liaisons sont forcées en IPv4 : rien de légitime à joindre autrement
+        }
+
+        var bytes = address.GetAddressBytes();
+        return bytes[0] == 0
+               || (bytes[0] == 169 && bytes[1] == 254)
+               || bytes[0] >= 224;
+    }
+
+    // Adresses IPv4 de toutes les interfaces (pas seulement celles que l'inventaire affiche), relues au plus toutes les 5 s.
+    private IReadOnlySet<IPAddress> LocalAddresses()
+    {
+        var cached = _localAddresses;
+        if (cached is not null && DateTime.UtcNow - cached.Value.At < TimeSpan.FromSeconds(5))
+        {
+            return cached.Value.Addresses;
+        }
+
+        var addresses = new HashSet<IPAddress>(_inventory.Snapshot.Select(a => a.IPv4Address).OfType<IPAddress>());
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+                {
+                    addresses.Add(unicast.Address.IsIPv4MappedToIPv6 ? unicast.Address.MapToIPv4() : unicast.Address);
+                }
+            }
+        }
+        catch (System.Net.NetworkInformation.NetworkInformationException)
+        {
+            // Liste système indisponible : on garde les adresses de l'inventaire.
+        }
+
+        _localAddresses = (DateTime.UtcNow, addresses);
+        return addresses;
     }
 
     private static byte SocksCodeFor(SocketError error) => error switch
@@ -618,6 +696,13 @@ public sealed class DispatchProxyService : IDispatchService, IUpstreamConnector,
         _listener = null;
         cts?.Dispose();
         _cts = null;
+    }
+
+    /// <summary>Connexions sortantes d'un client venu du réseau : les destinations de cette machine lui sont refusées.</summary>
+    private sealed class NetworkClientConnector(DispatchProxyService owner) : IUpstreamConnector
+    {
+        public Task<UpstreamConnection> ConnectAsync(string host, int port, CancellationToken cancellationToken)
+            => owner.ConnectUpstreamAsync(host, port, fromNetwork: true, cancellationToken);
     }
 
     private sealed class UplinkRuntime(string adapterId, int weight, bool enabled)

@@ -26,8 +26,29 @@ internal static class WindowsScripts
     public const string NatName = "NetShareHub";
     public const string FirewallRuleName = "NetShareHub DHCP";
 
-    /// <summary>Entoure une chaîne de guillemets simples PowerShell (aucune interprétation possible).</summary>
-    public static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
+    // PowerShell reconnaît comme guillemet simple l'apostrophe ASCII et aussi les apostrophes typographiques U+2018 à U+201B
+    // (‘ ’ ‚ ‛) : un SSID « Marie’s PC » fermerait la chaîne et permettrait d'injecter du code exécuté en administrateur.
+    private static readonly char[] SingleQuotes = { '\'', '‘', '’', '‚', '‛' };
+
+    /// <summary>
+    /// Entoure une chaîne de guillemets simples PowerShell (aucune interprétation possible) : chaque guillemet simple, ASCII
+    /// ou typographique, est doublé, comme le fait <c>CodeGeneration.EscapeSingleQuotedStringContent</c> de PowerShell.
+    /// </summary>
+    public static string Quote(string value)
+    {
+        var quoted = new StringBuilder(value.Length + 2).Append('\'');
+        foreach (var c in value)
+        {
+            if (Array.IndexOf(SingleQuotes, c) >= 0)
+            {
+                quoted.Append(c);
+            }
+
+            quoted.Append(c);
+        }
+
+        return quoted.Append('\'').ToString();
+    }
 
     // --- Point d'accès mobile (API WinRT) -------------------------------------------------------------------
 

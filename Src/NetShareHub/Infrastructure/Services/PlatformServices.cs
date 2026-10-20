@@ -72,7 +72,7 @@ public sealed class PrivilegeService : IPrivilegeService
             ProcessStartInfo startInfo;
             if (OperatingSystem.IsWindows())
             {
-                startInfo = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" };
+                startInfo = new ProcessStartInfo(executable, SingleInstanceLock.RelaunchArgument) { UseShellExecute = true, Verb = "runas" };
             }
             else if (OperatingSystem.IsLinux())
             {

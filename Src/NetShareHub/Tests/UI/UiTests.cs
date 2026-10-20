@@ -401,6 +401,34 @@ public class UiTests
     });
 
     [Fact]
+    public Task Le_dispatch_avec_authentification_incomplete_ne_demarre_pas_en_proxy_ouvert() => UiSession.RunAsync(async () =>
+    {
+        using var rig = new UiRig();
+        await rig.OpenAsync();
+        var dispatch = rig.Main.Dispatch;
+        Assert.True(dispatch.CanStart);
+
+        dispatch.AllowLan = true;
+        dispatch.UseAuthentication = true; // case cochée, identifiant vide : le service ouvrirait le proxy à tous
+        Assert.False(dispatch.CanStart);
+        Assert.True(dispatch.ShowCredentialsMissing);
+        Assert.True(dispatch.ShowOpenProxyWarning);
+
+        dispatch.Username = "   ";
+        dispatch.Password = "secret";
+        Assert.False(dispatch.CanStart); // un identifiant fait d'espaces est vidé par BuildConfig
+
+        dispatch.Username = "moi";
+        Assert.True(dispatch.CanStart);
+        Assert.False(dispatch.ShowOpenProxyWarning);
+        Assert.Equal("moi", dispatch.BuildConfig().Username);
+
+        dispatch.UseAuthentication = false;
+        Assert.True(dispatch.CanStart);
+        Assert.True(dispatch.ShowOpenProxyWarning);
+    });
+
+    [Fact]
     public Task Les_preferences_sont_restaurees_au_lancement_suivant() => UiSession.RunAsync(async () =>
     {
         using var rig = new UiRig();

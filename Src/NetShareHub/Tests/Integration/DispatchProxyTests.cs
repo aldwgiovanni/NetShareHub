@@ -389,6 +389,50 @@ public sealed class DispatchProxyTests : IAsyncLifetime
         Assert.Contains(status.ClientEndpoints, e => e.StartsWith("127.0.0.1:"));
     }
 
+    // --- Destinations interdites --------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Un_nom_de_destination_vide_est_refuse()
+    {
+        // Dns.GetHostAddressesAsync("") renverrait toutes les adresses de la machine.
+        await _proxy.StartAsync(Config());
+
+        using var client = await ConnectAsync();
+        var reply = await Socks5HandshakeAsync(client.GetStream(), string.Empty, _echo.Port);
+
+        Assert.Equal(2, reply[1]); // 0x02 = connexion interdite par les règles
+    }
+
+    [Fact]
+    public async Task Un_client_du_reseau_ne_peut_pas_joindre_les_services_locaux_de_la_machine()
+    {
+        var lanAddress = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
+            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+            .Select(u => u.Address)
+            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a)
+                                 && !a.ToString().StartsWith("169.254.", StringComparison.Ordinal));
+        if (lanAddress is null)
+        {
+            return; // machine sans adresse réseau : impossible de simuler un client distant
+        }
+
+        await _proxy.StartAsync(Config(c => c.AllowLan = true));
+
+        // Le client se présente avec l'adresse réseau de la machine, comme le ferait un autre appareil du réseau local.
+        foreach (var destination in new[] { "127.0.0.1", "localhost", lanAddress.ToString() })
+        {
+            using var remote = new TcpClient(new IPEndPoint(lanAddress, 0));
+            await remote.ConnectAsync(lanAddress, _proxy.BoundPort);
+            var reply = await Socks5HandshakeAsync(remote.GetStream(), destination, _echo.Port);
+            Assert.True(reply[1] == 2, $"{destination} : réponse {reply[1]} au lieu de 2 (interdit)");
+        }
+
+        // Venu de la boucle locale, c'est l'utilisateur de la machine : il garde l'accès à ses propres services.
+        using var local = await ConnectAsync();
+        await Socks5ConnectAsync(local.GetStream(), "127.0.0.1", _echo.Port);
+    }
+
     // --- Outils ---------------------------------------------------------------------------------------------------------
 
     private async Task RoundTripAsync(string payload)
