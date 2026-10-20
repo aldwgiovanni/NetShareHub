@@ -257,7 +257,7 @@ public class UserFileSecurityTests
 public class SingleInstanceLockTests
 {
     [Fact]
-    public async Task Une_seconde_instance_n_obtient_pas_le_mutex_tant_que_la_premiere_tourne()
+    public void Une_seconde_instance_n_obtient_pas_le_mutex_tant_que_la_premiere_tourne()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -268,17 +268,26 @@ public class SingleInstanceLockTests
         var first = SingleInstanceLock.TryAcquireMutex(name, TimeSpan.Zero);
         Assert.NotNull(first);
 
-        // Un mutex est réentrant pour son propriétaire : la « seconde instance » est simulée par un autre thread.
-        var second = await Task.Run(() => SingleInstanceLock.TryAcquireMutex(name, TimeSpan.Zero));
-        Assert.Null(second);
+        // Un mutex est réentrant pour son propriétaire : la « seconde instance » est simulée par un thread dédié.
+        // Test synchrone exprès : avec await/Task.Run, le thread du pool qui possède le mutex pourrait exécuter
+        // lui-même la tentative et l'obtenir (réentrance).
+        Assert.False(AcquiredOnOtherThread(name));
 
         first!.Dispose();
-        var third = await Task.Run(() =>
+        Assert.True(AcquiredOnOtherThread(name));
+    }
+
+    private static bool AcquiredOnOtherThread(string name)
+    {
+        var acquired = false;
+        var thread = new Thread(() =>
         {
-            using var acquired = SingleInstanceLock.TryAcquireMutex(name, TimeSpan.Zero);
-            return acquired is not null;
+            using var lockHandle = SingleInstanceLock.TryAcquireMutex(name, TimeSpan.Zero);
+            acquired = lockHandle is not null;
         });
-        Assert.True(third);
+        thread.Start();
+        thread.Join();
+        return acquired;
     }
 
     [Fact]
