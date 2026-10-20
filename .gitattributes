@@ -1,0 +1,11 @@
+* text=auto
+
+# Scripts Unix : toujours LF (un CRLF casse le « shebang » et les scripts de paquets).
+*.sh text eol=lf
+packaging/linux/netsharehub-elevate text eol=lf
+*.desktop text eol=lf
+*.policy text eol=lf
+
+# Binaires
+*.png binary
+*.ico binary

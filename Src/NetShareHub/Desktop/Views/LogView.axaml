@@ -1,0 +1,33 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NetShareHub.Desktop.ViewModels"
+             xmlns:log="using:NetShareHub.Desktop.Logging"
+             x:Class="NetShareHub.Desktop.Views.LogView"
+             x:DataType="vm:LogViewModel">
+
+  <Border Classes="card" Margin="0,14,10,0">
+    <Grid RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="title" Text="Journal" />
+          <TextBlock Classes="muted" Text="Dernières actions et incidents. Le fichier complet est conservé dans le dossier de configuration de l'application." />
+        </StackPanel>
+        <Button Grid.Column="1" Content="Effacer" Command="{Binding ClearCommand}" VerticalAlignment="Top" />
+      </Grid>
+
+      <ScrollViewer Grid.Row="1">
+        <ItemsControl ItemsSource="{Binding Entries}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="log:LogEntry">
+              <Grid ColumnDefinitions="68,92,*" Margin="0,2">
+                <TextBlock Classes="muted" Text="{Binding TimeText}" FontFamily="Consolas, Menlo, monospace" />
+                <TextBlock Grid.Column="1" Classes="muted" Text="{Binding LevelText}" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="2" Text="{Binding Message}" TextWrapping="Wrap" FontSize="12.5" />
+              </Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Grid>
+  </Border>
+</UserControl>

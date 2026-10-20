@@ -1,0 +1,44 @@
+name: Signaler un problème
+description: Quelque chose ne fonctionne pas comme prévu
+labels: [bug]
+body:
+  - type: dropdown
+    id: module
+    attributes:
+      label: Fonction concernée
+      options: [Dispatch (proxy), "Partage : hotspot Wi-Fi", "Partage : vers un adaptateur", Installation, Interface, Autre]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version de NetShare Hub
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Système
+      description: Windows (version) ou distribution Linux, et environnement de bureau
+      placeholder: "Windows 11 24H2 / Ubuntu 24.04 GNOME"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Matériel réseau concerné
+      description: Modèle de la carte Wi-Fi / Ethernet / clé 4G si le problème touche le partage
+  - type: textarea
+    id: what
+    attributes:
+      label: Ce qui se passe
+      description: Étapes pour reproduire, résultat obtenu et résultat attendu
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Contenu de l'onglet Journal
+      description: Copiez les lignes pertinentes (aucun mot de passe n'y figure)
+      render: text

@@ -1,0 +1,151 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NetShareHub.Desktop.ViewModels"
+             x:Class="NetShareHub.Desktop.Views.DispatchView"
+             x:DataType="vm:DispatchViewModel">
+
+  <ScrollViewer Padding="0,14,10,0">
+    <StackPanel Spacing="14">
+
+      <!-- État et démarrage -->
+      <Border Classes="status" Classes.running="{Binding IsRunning}" Classes.faulted="{Binding IsFaulted}">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="big" Text="{Binding StateText}" />
+            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+            <TextBlock Classes="muted" IsVisible="{Binding !IsRunning}"
+                       Text="Les connexions cochées à gauche sont cumulées : chaque nouvelle connexion d'un appareil part par l'une d'elles, ce qui additionne les débits et protège d'une panne." />
+          </StackPanel>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="20,0,0,0">
+            <Button Classes="primary" Content="Démarrer le Dispatch" Command="{Binding StartCommand}"
+                    IsEnabled="{Binding CanStart}" IsVisible="{Binding !IsRunning}" />
+            <Button Classes="danger" Content="Arrêter le Dispatch" Command="{Binding StopCommand}"
+                    IsVisible="{Binding IsRunning}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- Adresses à utiliser -->
+      <Border Classes="card" IsVisible="{Binding IsRunning}">
+        <StackPanel Spacing="10">
+          <StackPanel Spacing="3">
+            <TextBlock Classes="title" Text="Adresse du proxy" />
+            <TextBlock Classes="muted" Text="Saisissez-la dans le navigateur, le téléchargeur ou les réglages de proxy de l'appareil. Le même port accepte SOCKS5 et HTTP." />
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding Endpoints}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:ClientEndpoint">
+                <Border Classes="row" Margin="0,0,0,6">
+                  <Grid ColumnDefinitions="110,*,Auto">
+                    <TextBlock Text="{Binding Label}" Classes="muted" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Value}" FontFamily="Consolas, Menlo, monospace" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Content="Copier" Tag="{Binding Value}" Padding="12,4" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <!-- Liaisons en direct -->
+      <Border Classes="card" IsVisible="{Binding IsRunning}">
+        <StackPanel Spacing="10">
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Classes="title" Text="Liaisons en direct" />
+            <TextBlock Grid.Column="1" Classes="muted" Text="{Binding ActiveConnections, StringFormat='{}{0} connexion(s) ouverte(s)'}" />
+          </Grid>
+          <ItemsControl ItemsSource="{Binding Uplinks}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:UplinkRowViewModel">
+                <Border Classes="row" Margin="0,0,0,6">
+                  <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Ellipse Classes="dot" Classes.ok="{Binding IsHealthy}" Classes.bad="{Binding IsDown}" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                      <TextBlock Classes="muted" Text="{Binding Address}" VerticalAlignment="Center" />
+                      <Border Classes="chip"><TextBlock Text="{Binding Weight}" FontSize="11" /></Border>
+                    </StackPanel>
+                    <TextBlock Grid.Column="1" Classes="muted" Text="{Binding HealthText}" HorizontalAlignment="Right" />
+                    <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="22" Margin="18,6,0,0">
+                      <TextBlock Classes="muted" Text="{Binding Download, StringFormat='↓ {0}'}" />
+                      <TextBlock Classes="muted" Text="{Binding Upload, StringFormat='↑ {0}'}" />
+                      <TextBlock Classes="muted" Text="{Binding Active, StringFormat='{}{0} ouvertes'}" />
+                      <TextBlock Classes="muted" Text="{Binding Total, StringFormat='{}{0} au total'}" />
+                      <TextBlock Classes="muted" Text="{Binding Failed, StringFormat='{}{0} échecs'}" Foreground="{DynamicResource BadBrush}" IsVisible="{Binding HasFailures}" />
+                      <TextBlock Classes="muted" Text="{Binding TotalDownload, StringFormat='reçu {0}'}" />
+                      <TextBlock Classes="muted" Text="{Binding TotalUpload, StringFormat='envoyé {0}'}" />
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <!-- Réglages -->
+      <Border Classes="card">
+        <StackPanel Spacing="14" IsEnabled="{Binding CanEdit}">
+          <TextBlock Classes="title" Text="Réglages" />
+
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto" RowSpacing="12">
+            <StackPanel>
+              <TextBlock Classes="label" Text="Port" />
+              <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535" Increment="1" FormatString="0" HorizontalAlignment="Stretch" />
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Classes="label" Text="Mode de répartition" />
+              <ComboBox ItemsSource="{Binding Strategies}" SelectedItem="{Binding SelectedStrategy}" HorizontalAlignment="Stretch" />
+            </StackPanel>
+            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Classes="muted" Text="{Binding StrategyHelp}" />
+          </Grid>
+
+          <StackPanel Spacing="4">
+            <ToggleSwitch IsChecked="{Binding AllowLan}" OnContent="Ouvert au réseau local" OffContent="Cet ordinateur uniquement" />
+            <TextBlock Classes="muted" Text="{Binding ScopeText}" />
+            <Border Classes="notice" IsVisible="{Binding ShowOpenProxyWarning}">
+              <TextBlock TextWrapping="Wrap" Text="Un proxy ouvert au réseau sans mot de passe peut être utilisé par n'importe quel appareil connecté. Activez l'authentification ci-dessous si ce réseau n'est pas de confiance." />
+            </Border>
+          </StackPanel>
+
+          <StackPanel Spacing="6">
+            <CheckBox IsChecked="{Binding StickyDestinations}" Content="Garder un même site sur la même liaison" />
+            <Grid ColumnDefinitions="Auto,160" IsVisible="{Binding StickyDestinations}" Margin="28,0,0,0">
+              <TextBlock Classes="muted" Text="pendant (minutes)  " VerticalAlignment="Center" />
+              <NumericUpDown Grid.Column="1" Value="{Binding StickyMinutes}" Minimum="1" Maximum="240" Increment="1" FormatString="0" />
+            </Grid>
+            <TextBlock Classes="muted" Margin="28,0,0,0" TextWrapping="Wrap"
+                       Text="Recommandé : banques, messageries et réseaux sociaux ferment la session quand l'adresse IP change en cours de route." />
+          </StackPanel>
+
+          <CheckBox IsChecked="{Binding HealthProbe}" Content="Surveiller les liaisons et écarter automatiquement celles qui ne répondent plus" />
+
+          <StackPanel Spacing="8">
+            <CheckBox IsChecked="{Binding UseAuthentication}" Content="Protéger le proxy par identifiant et mot de passe" />
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="14" IsVisible="{Binding UseAuthentication}" Margin="28,0,0,0">
+              <StackPanel>
+                <TextBlock Classes="label" Text="Identifiant" />
+                <TextBox Text="{Binding Username}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1">
+                <TextBlock Classes="label" Text="Mot de passe" />
+                <TextBox Text="{Binding Password}" PasswordChar="●" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <!-- Limites -->
+      <Border Classes="card">
+        <StackPanel Spacing="4">
+          <TextBlock Classes="title" Text="Bon à savoir" />
+          <TextBlock Classes="muted" Text="• La répartition se fait connexion par connexion : un téléchargement unique reste sur une seule liaison, mais plusieurs onglets, applications ou téléchargements en parallèle se partagent les liaisons." />
+          <TextBlock Classes="muted" Text="• Gérés : navigation web, applications compatibles proxy SOCKS5/HTTP, téléchargements. Non gérés : UDP (jeux en ligne, appels vidéo, certaines visioconférences)." />
+          <TextBlock Classes="muted" Text="• Aucun droit administrateur n'est nécessaire pour le Dispatch." />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

@@ -1,0 +1,65 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NetShareHub.Desktop.ViewModels"
+        xmlns:views="using:NetShareHub.Desktop.Views"
+        x:Class="NetShareHub.Desktop.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="NetShare Hub"
+        Icon="/Assets/icon.png"
+        Width="1200" Height="800"
+        MinWidth="1000" MinHeight="680"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource AppBackground}">
+
+  <Grid RowDefinitions="Auto,Auto,*">
+
+    <!-- En-tête -->
+    <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="24,18,24,14">
+      <Image Source="avares://NetShareHub/Assets/icon.png" Width="44" Height="44" />
+      <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+        <TextBlock Classes="big" Text="NetShare Hub" />
+        <TextBlock Classes="muted" Text="Partagez votre connexion Internet et cumulez vos liaisons — hotspot, routeur et dispatch en un seul outil." />
+      </StackPanel>
+      <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+        <Border Classes="chip" VerticalAlignment="Center">
+          <TextBlock Text="{Binding PlatformText}" FontSize="12" />
+        </Border>
+        <Border Classes="chip" VerticalAlignment="Center" IsVisible="{Binding IsElevated}">
+          <TextBlock Text="Administrateur" FontSize="12" Foreground="{DynamicResource OkBrush}" />
+        </Border>
+        <Border Classes="chip" VerticalAlignment="Center" IsVisible="{Binding NeedsElevation}">
+          <TextBlock Text="Droits limités" FontSize="12" Foreground="{DynamicResource WarnBrush}" />
+        </Border>
+        <Button Content="Actualiser" Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsRefreshing}" />
+      </StackPanel>
+    </Grid>
+
+    <!-- Bandeau d'élévation -->
+    <Border Grid.Row="1" Classes="notice" Margin="24,0,24,12" IsVisible="{Binding NeedsElevation}">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="2">
+          <TextBlock Text="Le partage de connexion nécessite les droits administrateur" FontWeight="SemiBold" />
+          <TextBlock Classes="muted" Text="Le Dispatch fonctionne déjà tel quel. Pour partager vers un hotspot ou un autre adaptateur, relancez l'application en administrateur." />
+        </StackPanel>
+        <Button Grid.Column="1" Content="Relancer en administrateur" Command="{Binding ElevateCommand}" VerticalAlignment="Center" Margin="16,0,0,0" />
+      </Grid>
+    </Border>
+
+    <!-- Contenu -->
+    <Grid Grid.Row="2" ColumnDefinitions="410,*" Margin="24,0,24,24">
+      <views:SourcesPanel DataContext="{Binding Catalog}" />
+
+      <TabControl Grid.Column="1" Margin="18,0,0,0" SelectedIndex="{Binding SelectedTabIndex}">
+        <TabItem Header="Partage">
+          <views:SharingView DataContext="{Binding Sharing}" />
+        </TabItem>
+        <TabItem Header="Dispatch">
+          <views:DispatchView DataContext="{Binding Dispatch}" />
+        </TabItem>
+        <TabItem Header="Journal">
+          <views:LogView DataContext="{Binding Log}" />
+        </TabItem>
+      </TabControl>
+    </Grid>
+  </Grid>
+</Window>

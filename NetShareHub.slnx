@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/Src/" />
+  <Folder Name="/Src/NetShareHub/" />
+  <Folder Name="/Src/NetShareHub/Application/">
+    <Project Path="Src/NetShareHub/Application/NetShareHub.Application.csproj" />
+  </Folder>
+  <Folder Name="/Src/NetShareHub/Desktop/">
+    <Project Path="Src/NetShareHub/Desktop/NetShareHub.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/Src/NetShareHub/Domain/">
+    <Project Path="Src/NetShareHub/Domain/NetShareHub.Domain.csproj" />
+  </Folder>
+  <Folder Name="/Src/NetShareHub/Infrastructure/">
+    <Project Path="Src/NetShareHub/Infrastructure/NetShareHub.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/Src/NetShareHub/Tests/">
+    <Project Path="Src/NetShareHub/Tests/NetShareHub.Tests.csproj" />
+  </Folder>
+</Solution>

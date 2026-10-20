@@ -1,0 +1,112 @@
+name: Release
+
+# Publier une version : git tag v1.2.0 && git push origin v1.2.0
+# Le workflow compile, teste, empaquette et crée la release GitHub avec tous les fichiers à télécharger.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Numéro de version (ex. 1.0.0) — la release n''est créée que depuis un tag'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (zip + installeur)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $ref = '${{ github.ref_name }}'
+          $version = if ($ref -like 'v*') { $ref.Substring(1) } else { '${{ inputs.version }}' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Tests
+        run: dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj -c Release --nologo
+
+      - name: Empaquetage (zip portable + installeur Inno Setup)
+        shell: pwsh
+        run: ./packaging/build.ps1 -Version ${{ steps.v.outputs.version }} -Targets win-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  linux:
+    name: Linux (.deb + .tar.gz, x64 et arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version
+        id: v
+        run: |
+          ref='${{ github.ref_name }}'
+          case "$ref" in v*) version="${ref#v}";; *) version='${{ inputs.version }}';; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tests
+        run: dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj -c Release --nologo
+
+      - name: Paquets
+        run: |
+          for arch in x64 arm64; do
+            dotnet publish Src/NetShareHub/Desktop/NetShareHub.Desktop.csproj -c Release -r linux-$arch --self-contained true \
+              -o "dist/publish/linux-$arch" -p:Version=${{ steps.v.outputs.version }} -p:DebugType=none -p:DebugSymbols=false --nologo -v quiet
+            sh packaging/linux/build-linux-packages.sh "dist/publish/linux-$arch" "$arch" "${{ steps.v.outputs.version }}" dist
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+  release:
+    name: Créer la release
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Empreintes SHA-256
+        run: cd assets && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          generate_release_notes: true
+          body: |
+            ## Télécharger
+
+            | Système | Fichier |
+            |---|---|
+            | Windows 10/11 | `NetShareHub-Setup-*-x64.exe` (installeur) ou `NetShareHub-*-win-x64-portable.zip` (sans installation) |
+            | Debian / Ubuntu / Mint | `netsharehub_*_amd64.deb` (ou `arm64`) — `sudo apt install ./fichier.deb` |
+            | Autres Linux | `netsharehub-*-linux-x64.tar.gz` (ou `arm64`) — puis `sudo ./install.sh` |
+
+            Tout est autonome : aucun runtime .NET à installer. Les empreintes SHA-256 sont dans `SHA256SUMS.txt`.
+            Le guide complet est dans le [README](https://github.com/${{ github.repository }}#readme).

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NetShare Hub
+GenericName=Partage de connexion Internet
+Comment=Partagez votre connexion Internet (hotspot, routeur) et cumulez plusieurs liaisons
+Exec=/opt/netsharehub/NetShareHub
+Icon=netsharehub
+Terminal=false
+Categories=Network;Utility;
+Keywords=hotspot;wifi;partage;proxy;dispatch;routeur;connexion;
+StartupWMClass=NetShareHub

@@ -1,0 +1,133 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NetShareHub.Desktop.ViewModels"
+             x:Class="NetShareHub.Desktop.Views.SharingView"
+             x:DataType="vm:SharingViewModel">
+
+  <ScrollViewer Padding="0,14,10,0">
+    <StackPanel Spacing="14">
+
+      <!-- État et démarrage -->
+      <Border Classes="status" Classes.running="{Binding IsRunning}" Classes.faulted="{Binding IsFaulted}">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="big" Text="{Binding StateText}" />
+            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" IsVisible="{Binding !IsRunning}" />
+            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+            <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,6,0,0">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="x:String">
+                  <TextBlock Classes="muted" Text="{Binding StringFormat='⚠  {0}'}" Foreground="{DynamicResource WarnBrush}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="20,0,0,0">
+            <Button Classes="primary" Content="Démarrer le partage" Command="{Binding StartCommand}"
+                    IsEnabled="{Binding CanStart}" IsVisible="{Binding !IsRunning}" />
+            <Button Classes="danger" Content="Arrêter le partage" Command="{Binding StopCommand}"
+                    IsVisible="{Binding IsRunning}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- Adaptateurs -->
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <StackPanel Spacing="3">
+            <TextBlock Classes="title" Text="Partager vers un adaptateur" />
+            <TextBlock Classes="muted" Text="Port Ethernet, adaptateur USB, réseau d'une machine virtuelle… Chaque appareil branché reçoit une adresse IP automatiquement et accède à Internet. Vous pouvez en cocher plusieurs." />
+          </StackPanel>
+
+          <Border Classes="row" IsVisible="{Binding !Catalog.HasTargets}">
+            <TextBlock Classes="muted" Text="Aucun adaptateur disponible comme destination. Branchez un câble ou un adaptateur Ethernet/USB, puis actualisez." />
+          </Border>
+
+          <ItemsControl ItemsSource="{Binding Catalog.Targets}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:AdapterItemViewModel">
+                <Border Classes="row" Margin="0,0,0,6">
+                  <Grid ColumnDefinitions="Auto,*,Auto">
+                    <CheckBox IsChecked="{Binding IsTarget}" IsEnabled="{Binding CanSelectTarget}" MinWidth="0" Margin="0,0,6,0" />
+                    <StackPanel Grid.Column="1" Spacing="1">
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                        <Border Classes="chip"><TextBlock Text="{Binding KindText}" FontSize="11" /></Border>
+                      </StackPanel>
+                      <TextBlock Classes="muted" Text="{Binding Address}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                      <Ellipse Classes="dot" Classes.ok="{Binding IsUp}" />
+                      <TextBlock Classes="muted" Text="{Binding TargetStatus}" />
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <!-- Hotspot -->
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Spacing="3">
+              <TextBlock Classes="title" Text="Hotspot Wi-Fi" />
+              <TextBlock Classes="muted" Text="Transforme cet ordinateur en point d'accès : téléphones, tablettes et autres PC se connectent avec le nom et le mot de passe ci-dessous." />
+            </StackPanel>
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding HotspotEnabled}" IsEnabled="{Binding CanToggleHotspot}"
+                          OnContent="" OffContent="" VerticalAlignment="Top" />
+          </Grid>
+
+          <Border Classes="row" IsVisible="{Binding !SupportsWifiHotspot}">
+            <TextBlock Classes="muted" Text="{Binding CapabilityNote}" />
+          </Border>
+
+          <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="14" RowSpacing="10"
+                IsVisible="{Binding HotspotEnabled}" IsEnabled="{Binding CanConfigure}">
+            <StackPanel>
+              <TextBlock Classes="label" Text="Nom du réseau (SSID)" />
+              <TextBox Text="{Binding Ssid}" MaxLength="32" />
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Classes="label" Text="Bande" />
+              <ComboBox ItemsSource="{Binding Bands}" SelectedItem="{Binding SelectedBand}" HorizontalAlignment="Stretch" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.ColumnSpan="2">
+              <TextBlock Classes="label" Text="Mot de passe (8 à 63 caractères)" />
+              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                <TextBox Text="{Binding Password}" PasswordChar="●" RevealPassword="{Binding ShowPassword}" MaxLength="63" />
+                <ToggleButton Grid.Column="1" Content="Afficher" IsChecked="{Binding ShowPassword}" />
+                <Button Grid.Column="2" Content="Générer" Command="{Binding RegeneratePasswordCommand}" />
+              </Grid>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Grid.ColumnSpan="2" IsVisible="{Binding IsLinux}">
+              <TextBlock Classes="label" Text="Carte Wi-Fi qui émet le hotspot (différente de la connexion partagée)" />
+              <ComboBox ItemsSource="{Binding Catalog.WifiAdapters}" SelectedItem="{Binding SelectedHotspotAdapter}" HorizontalAlignment="Stretch">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:AdapterItemViewModel">
+                    <TextBlock Text="{Binding Name}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+            </StackPanel>
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <!-- Répartition du trafic des appareils partagés -->
+      <Border Classes="card">
+        <StackPanel Spacing="8">
+          <TextBlock Classes="title" Text="Plusieurs connexions Internet" />
+          <CheckBox Content="Répartir aussi le trafic des appareils partagés entre toutes les connexions cochées"
+                    IsChecked="{Binding BalanceSources}" IsVisible="{Binding SupportsTransparentBalancing}" />
+          <TextBlock Classes="muted" IsVisible="{Binding !SupportsTransparentBalancing}"
+                     Text="Sous ce système, les appareils partagés utilisent la connexion dont le poids est le plus élevé. Pour cumuler toutes vos liaisons, utilisez l'onglet Dispatch : il suffit de renseigner l'adresse du proxy sur les appareils." />
+          <TextBlock Classes="muted" IsVisible="{Binding SupportsTransparentBalancing}"
+                     Text="Le noyau Linux répartit chaque connexion sortante entre les liaisons cochées, proportionnellement à leur poids. Les sessions web restent sur la même liaison le temps de leur durée." />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

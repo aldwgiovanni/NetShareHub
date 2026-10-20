@@ -1,0 +1,19 @@
+#!/bin/sh
+# Lancé par pkexec (cf. com.netsharehub.policy) : démarre NetShare Hub en root.
+#
+# pkexec nettoie l'environnement : sans DISPLAY / XAUTHORITY / WAYLAND_DISPLAY, la fenêtre ne pourrait pas s'ouvrir.
+# L'application passe donc ces variables en arguments NOM=valeur ; seules celles de la liste blanche ci-dessous
+# sont reprises, tout le reste est ignoré.
+set -eu
+
+APP_DIR=$(dirname "$(readlink -f "$0")")
+
+for pair in "$@"; do
+    case "$pair" in
+        DISPLAY=* | XAUTHORITY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | XDG_SESSION_TYPE=* | DBUS_SESSION_BUS_ADDRESS=*)
+            export "$pair"
+            ;;
+    esac
+done
+
+exec "$APP_DIR/NetShareHub"

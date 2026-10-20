@@ -1,0 +1,66 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NetShareHub.Desktop.ViewModels"
+             x:Class="NetShareHub.Desktop.Views.SourcesPanel"
+             x:DataType="vm:AdapterCatalog">
+
+  <Border Classes="card">
+    <Grid RowDefinitions="Auto,*,Auto">
+      <StackPanel Spacing="3" Margin="0,0,0,12">
+        <TextBlock Classes="title" Text="Connexions Internet" />
+        <TextBlock Classes="muted" Text="Cochez celles à partager. Avec plusieurs connexions, réglez le poids de chacune : plus il est élevé, plus elle reçoit de trafic." />
+      </StackPanel>
+
+      <ScrollViewer Grid.Row="1">
+        <StackPanel Spacing="8">
+          <Border Classes="row" IsVisible="{Binding !HasSources}">
+            <TextBlock Classes="muted" Text="Aucune connexion Internet active détectée. Connectez-vous (Wi-Fi, Ethernet, clé 4G…) puis cliquez sur Actualiser." />
+          </Border>
+
+          <ItemsControl ItemsSource="{Binding Sources}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:AdapterItemViewModel">
+                <Border Classes="row" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto,Auto">
+                    <CheckBox Grid.RowSpan="2" IsChecked="{Binding IsSource}" IsEnabled="{Binding CanEdit}" VerticalAlignment="Top" MinWidth="0" Margin="0,0,6,0" />
+
+                    <StackPanel Grid.Column="1" Spacing="2">
+                      <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxWidth="170" />
+                        <Border Classes="chip">
+                          <TextBlock Text="{Binding KindText}" FontSize="11" />
+                        </Border>
+                      </StackPanel>
+                      <TextBlock Classes="muted" Text="{Binding Address}" />
+                      <TextBlock Classes="muted" Text="{Binding Details}" IsVisible="{Binding HasDetails}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" HorizontalAlignment="Right" Spacing="3" IsVisible="{Binding IsSource}">
+                      <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                        <Ellipse Classes="dot" Classes.ok="{Binding IsHealthy}" Classes.bad="{Binding IsDown}" VerticalAlignment="Center" />
+                        <TextBlock Classes="muted" Text="{Binding ActiveConnections, StringFormat='{}{0} conn.'}" />
+                      </StackPanel>
+                      <TextBlock Classes="muted" Text="{Binding LiveText}" HorizontalAlignment="Right" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="2" Grid.ColumnSpan="3" ColumnDefinitions="Auto,*" Margin="0,6,0,0" IsVisible="{Binding IsSource}">
+                      <TextBlock Classes="muted" Text="{Binding WeightText}" VerticalAlignment="Center" MinWidth="58" />
+                      <Slider Grid.Column="1" Minimum="1" Maximum="10" TickFrequency="1" IsSnapToTickEnabled="True"
+                              Value="{Binding Weight}" IsEnabled="{Binding CanEdit}" />
+                    </Grid>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </ScrollViewer>
+
+      <StackPanel Grid.Row="2" Spacing="8" Margin="0,10,0,0">
+        <TextBlock Classes="muted" IsVisible="{Binding IsLocked}"
+                   Text="Sélection verrouillée tant que le partage ou le Dispatch est actif. Arrêtez-les pour la modifier." />
+        <CheckBox Content="Afficher les adaptateurs virtuels (VM, VPN, conteneurs)" IsChecked="{Binding ShowVirtual}" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</UserControl>
