@@ -18,14 +18,14 @@ public class UndoJournalTests
     {
         using var dir = new TempDirectory();
         var runner = new RecordingRunner();
-        var journal = new UndoJournal(Path.Combine(dir.Path, "j.json"), runner, Logs.For<UndoJournalTests>());
+        var journal = new UndoJournal(Path.Combine(dir.Path, "j.json"), runner, Logs.For<UndoJournalTests>(), enforceSecurity: false);
 
-        journal.Push(CommandSpec.Of("first"));
-        journal.Push(CommandSpec.Of("second"));
-        journal.Push(CommandSpec.Of("third"));
+        journal.Push(UndoStep.LinuxConnectDevice("first"));
+        journal.Push(UndoStep.LinuxConnectDevice("second"));
+        journal.Push(UndoStep.LinuxConnectDevice("third"));
         await journal.UndoAllAsync();
 
-        Assert.Equal(new[] { "third", "second", "first" }, runner.Commands.Select(c => c.FileName));
+        Assert.Equal(new[] { "third", "second", "first" }, runner.Commands.Select(c => c.Arguments[^1]));
         Assert.False(journal.HasPending);
         Assert.False(File.Exists(Path.Combine(dir.Path, "j.json")));
     }
@@ -35,35 +35,36 @@ public class UndoJournalTests
     {
         using var dir = new TempDirectory();
         var path = Path.Combine(dir.Path, "j.json");
-        var before = new UndoJournal(path, new RecordingRunner(), Logs.For<UndoJournalTests>());
-        before.Push(CommandSpec.Of("ip", "route", "del", "default", "metric", "10"));
-        before.Push(CommandSpec.PowerShell("Write-Output 'x'", "Étape PowerShell"));
+        var before = new UndoJournal(path, new RecordingRunner(), Logs.For<UndoJournalTests>(), enforceSecurity: false);
+        before.Push(UndoStep.LinuxDeleteRouteOverride());
+        before.Push(UndoStep.WindowsSetForwarding(5, false, "Ethernet"));
 
         // « Plantage » : un nouveau journal relit le fichier.
         var runner = new RecordingRunner();
-        var after = new UndoJournal(path, runner, Logs.For<UndoJournalTests>());
+        var after = new UndoJournal(path, runner, Logs.For<UndoJournalTests>(), enforceSecurity: false);
         Assert.True(after.HasPending);
         await after.UndoAllAsync();
 
         Assert.Equal(2, runner.Commands.Count);
         Assert.Equal("powershell.exe", runner.Commands[0].FileName);
-        Assert.Equal("Write-Output 'x'", runner.Commands[0].Script);
+        Assert.Equal(WindowsScripts.SetForwarding(5, false), runner.Commands[0].Script);
+        Assert.Equal("Restauration du routage sur Ethernet", runner.Commands[0].Description);
         Assert.Equal("ip", runner.Commands[1].FileName);
-        Assert.Equal(new[] { "route", "del", "default", "metric", "10" }, runner.Commands[1].Arguments);
+        Assert.Equal(new[] { "-4", "route", "del", "default", "metric", "10" }, runner.Commands[1].Arguments);
     }
 
     [Fact]
     public async Task Une_annulation_en_echec_n_interrompt_pas_les_suivantes()
     {
         using var dir = new TempDirectory();
-        var runner = new RecordingRunner(spec => spec.FileName == "boom" ? new CommandResult(1, "", "erreur") : new CommandResult(0, "", ""));
-        var journal = new UndoJournal(Path.Combine(dir.Path, "j.json"), runner, Logs.For<UndoJournalTests>());
-        journal.Push(CommandSpec.Of("last-to-run"));
-        journal.Push(CommandSpec.Of("boom"));
+        var runner = new RecordingRunner(spec => spec.Arguments[^1] == "boom" ? new CommandResult(1, "", "erreur") : new CommandResult(0, "", ""));
+        var journal = new UndoJournal(Path.Combine(dir.Path, "j.json"), runner, Logs.For<UndoJournalTests>(), enforceSecurity: false);
+        journal.Push(UndoStep.LinuxConnectDevice("last-to-run"));
+        journal.Push(UndoStep.LinuxConnectDevice("boom"));
 
         await journal.UndoAllAsync();
 
-        Assert.Equal(new[] { "boom", "last-to-run" }, runner.Commands.Select(c => c.FileName));
+        Assert.Equal(new[] { "boom", "last-to-run" }, runner.Commands.Select(c => c.Arguments[^1]));
         Assert.False(journal.HasPending);
     }
 }
@@ -507,6 +508,7 @@ public class WindowsScriptsSyntaxTests
 
         yield return new object[] { "ProbeHotspot", WindowsScripts.ProbeHotspot() };
         yield return new object[] { "StartHotspot", WindowsScripts.StartHotspot("b85e7a63-105b-4fd0-a5ae-b2ebd796ee5b", "L'été", "pa'ss word1", WifiBand.Band5GHz) };
+        yield return new object[] { "StartHotspotTypographic", WindowsScripts.StartHotspot(string.Empty, "Marie’s PC", "x’; Write-Output INJECTED; #", WifiBand.Auto) };
         yield return new object[] { "StopHotspot", WindowsScripts.StopHotspot() };
         yield return new object[] { "EnableIcs", WindowsScripts.EnableIcs("Wi-Fi", "Ethernet d'essai") };
         yield return new object[] { "DisableIcs", WindowsScripts.DisableIcs() };

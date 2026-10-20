@@ -1,47 +1,97 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using NetShareHub.Application.Contracts.Services;
 
 namespace NetShareHub.Infrastructure.Services.Sharing;
 
 /// <summary>
-/// Journal des commandes d'annulation, persisté sur disque après chaque ajout.
+/// Journal des annulations, persisté sur disque après chaque ajout.
 /// Si l'application est tuée en plein partage, le lancement suivant peut tout défaire avec <see cref="UndoAllAsync"/>.
+/// <para>
+/// Le fichier est rejoué avec les droits administrateur : il ne contient que des opérations typées (<see cref="UndoStep"/>),
+/// revalidées à la relecture, et n'est relu que s'il appartient à l'administration (<see cref="JournalSecurity"/>).
+/// </para>
 /// </summary>
 public sealed class UndoJournal
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        RespectRequiredConstructorParameters = true, // « Kind » obligatoire
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, // ancien format (commandes libres) refusé
+        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) },
+    };
 
     private readonly string _path;
     private readonly ICommandRunner _runner;
     private readonly ILogger _logger;
-    private readonly List<CommandSpec> _undo = new();
+    private readonly bool _enforceSecurity;
+    private readonly List<UndoStep> _undo = new();
+    private bool _loaded;
+    private bool _persistenceDisabled;
 
-    public UndoJournal(string path, ICommandRunner runner, ILogger logger)
+    /// <param name="path">Fichier du journal.</param>
+    /// <param name="runner">Exécution des commandes.</param>
+    /// <param name="logger">Journalisation.</param>
+    /// <param name="enforceSecurity">
+    /// Contrôle des droits du dossier et du propriétaire du fichier. Toujours actif pour le journal système ;
+    /// désactivable seulement pour un dossier explicitement fourni (tests).
+    /// </param>
+    public UndoJournal(string path, ICommandRunner runner, ILogger logger, bool enforceSecurity = true)
     {
         _path = path;
         _runner = runner;
         _logger = logger;
-        Load();
+        _enforceSecurity = enforceSecurity;
     }
 
-    public bool HasPending => _undo.Count > 0;
-
-    public IReadOnlyList<CommandSpec> Pending => _undo;
-
-    /// <summary>Enregistre la commande qui défera l'étape qu'on s'apprête à effectuer.</summary>
-    public void Push(CommandSpec undo)
+    // Chargement différé : une instance sans droits administrateur (qui ne lit ni ne rejoue jamais le journal) n'a pas à
+    // toucher au dossier protégé.
+    public bool HasPending
     {
-        _undo.Add(undo.Lenient());
+        get
+        {
+            EnsureLoaded();
+            return _undo.Count > 0;
+        }
+    }
+
+    public IReadOnlyList<UndoStep> Pending
+    {
+        get
+        {
+            EnsureLoaded();
+            return _undo;
+        }
+    }
+
+    /// <summary>Enregistre l'opération qui défera l'étape qu'on s'apprête à effectuer.</summary>
+    public void Push(UndoStep undo)
+    {
+        EnsureLoaded();
+        _ = undo.ToCommand(); // une étape invalide est une erreur de programmation : on la refuse tout de suite
+        _undo.Add(undo);
         Save();
     }
 
     /// <summary>Exécute les annulations en ordre inverse, puis vide le journal. Les erreurs sont journalisées sans interrompre le nettoyage.</summary>
     public async Task UndoAllAsync(CancellationToken cancellationToken = default)
     {
+        EnsureLoaded();
         for (var i = _undo.Count - 1; i >= 0; i--)
         {
-            var command = _undo[i];
+            CommandSpec command;
+            try
+            {
+                command = _undo[i].ToCommand();
+            }
+            catch (InvalidDataException ex)
+            {
+                _logger.LogWarning("Annulation ignorée : {Message}", ex.Message);
+                continue;
+            }
+
             try
             {
                 var result = await _runner.RunAsync(command, cancellationToken);
@@ -60,6 +110,25 @@ public sealed class UndoJournal
         Save();
     }
 
+    private void EnsureLoaded()
+    {
+        if (_loaded)
+        {
+            return;
+        }
+
+        _loaded = true;
+        var directory = Path.GetDirectoryName(_path)!;
+        if (_enforceSecurity && !JournalSecurity.TrySecureDirectory(directory, out var reason))
+        {
+            _persistenceDisabled = true;
+            _logger.LogWarning("Journal d'annulation désactivé, dossier {Directory} non sûr : {Reason}", directory, reason);
+            return;
+        }
+
+        Load();
+    }
+
     private void Load()
     {
         try
@@ -69,25 +138,56 @@ public sealed class UndoJournal
                 return;
             }
 
-            var stored = JsonSerializer.Deserialize<List<StoredCommand>>(File.ReadAllText(_path), JsonOptions);
-            if (stored is null)
+            List<UndoStep>? stored;
+            using (var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                return;
+                if (_enforceSecurity && !JournalSecurity.IsTrustedJournal(stream, out var reason))
+                {
+                    stream.Dispose();
+                    _logger.LogWarning("Journal d'annulation refusé et supprimé ({Reason}) : il ne sera pas rejoué.", reason);
+                    TryDelete(_path);
+                    return;
+                }
+
+                stored = JsonSerializer.Deserialize<List<UndoStep>>(stream, JsonOptions);
             }
 
-            _undo.AddRange(stored.Select(s => new CommandSpec(s.FileName, s.Arguments, s.StdIn, s.TimeoutSeconds, true, s.Description)
+            if (stored is not null)
             {
-                Script = s.Script,
-            }));
+                _undo.AddRange(stored.Where(s => s is not null));
+            }
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        catch (JsonException ex)
+        {
+            // Ancien format (commandes libres, version 1.0.0) ou fichier altéré : il ne sera jamais rejoué, inutile de le garder.
+            _logger.LogWarning("Journal d'annulation illisible, supprimé : {Message}", ex.Message);
+            TryDelete(_path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             _logger.LogWarning("Journal d'annulation illisible : {Message}", ex.Message);
         }
     }
 
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Sans droit de suppression, le fichier reste ignoré à chaque lancement.
+        }
+    }
+
     private void Save()
     {
+        if (_persistenceDisabled)
+        {
+            return;
+        }
+
         try
         {
             if (_undo.Count == 0)
@@ -101,20 +201,26 @@ public sealed class UndoJournal
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            var stored = _undo.Select(c => new StoredCommand(c.FileName, c.Arguments.ToList(), c.StdIn, c.TimeoutSeconds, c.Description, c.Script));
-            File.WriteAllText(_path, JsonSerializer.Serialize(stored, JsonOptions));
+
+            // Fichier neuf puis remplacement : il hérite des droits du dossier protégé, même si un fichier déposé
+            // auparavant portait d'autres droits.
+            var temp = _path + ".tmp";
+            File.Delete(temp);
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream, _undo, JsonOptions);
+            }
+
+            if (_enforceSecurity)
+            {
+                JournalSecurity.TakeOwnership(temp);
+            }
+
+            File.Move(temp, _path, overwrite: true);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             _logger.LogWarning("Journal d'annulation non enregistré : {Message}", ex.Message);
         }
     }
-
-    private sealed record StoredCommand(
-        string FileName,
-        List<string> Arguments,
-        string? StdIn,
-        int TimeoutSeconds,
-        string? Description,
-        string? Script);
 }

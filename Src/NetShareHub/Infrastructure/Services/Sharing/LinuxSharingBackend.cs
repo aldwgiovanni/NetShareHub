@@ -20,9 +20,8 @@ namespace NetShareHub.Infrastructure.Services.Sharing;
 /// </summary>
 public sealed partial class LinuxSharingBackend : ISharingBackend
 {
-    private const int OverrideMetric = 10;
-    private const string RuleTag = "NetShareHub";
-    private const string AccessPointConnection = "NetShareHub-AP";
+    private const int OverrideMetric = UndoStep.LinuxOverrideMetric;
+    private const string AccessPointConnection = UndoStep.LinuxAccessPointConnection;
     private static readonly TimeSpan ProbeCacheDuration = TimeSpan.FromSeconds(30);
 
     private readonly ICommandRunner _runner;
@@ -45,7 +44,8 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         _inventory = inventory;
         _dhcpFactory = dhcpFactory;
         _logger = logger;
-        _journal = new UndoJournal(Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-linux.json"), runner, logger);
+        _journal = new UndoJournal(
+            Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-linux.json"), runner, logger, enforceSecurity: journalDirectory is null);
     }
 
     public bool HasPendingRecovery => _journal.HasPending;
@@ -190,7 +190,7 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         if (plan.BalanceSources && plan.Sources.Count > 1)
         {
             await SetSysctlAsync("net.ipv4.fib_multipath_hash_policy", "1", ct, lenient: true);
-            _journal.Push(deleteOverride);
+            _journal.Push(UndoStep.LinuxDeleteRouteOverride());
             await _runner.RunAsync(deleteOverride, ct); // reste éventuel d'une session précédente
             await _runner.RunOrThrowAsync(BuildMultipathRoute(plan.Sources, plan.SourceWeights), ct);
             _logger.LogInformation("Routage multi-chemins sur {Count} sources", plan.Sources.Count);
@@ -203,7 +203,7 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
             return; // c'est déjà la route par défaut du système
         }
 
-        _journal.Push(deleteOverride);
+        _journal.Push(UndoStep.LinuxDeleteRouteOverride());
         await _runner.RunAsync(deleteOverride, ct);
         await _runner.RunOrThrowAsync(
             new CommandSpec(
@@ -236,7 +236,7 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
 
         if (current.Success)
         {
-            _journal.Push(CommandSpec.Of("sysctl", "-w", $"{key}={current.StdOut.Trim()}"));
+            _journal.Push(UndoStep.LinuxRestoreSysctl(key, current.StdOut.Trim()));
         }
 
         var set = CommandSpec.Of("sysctl", "-w", $"{key}={value}");
@@ -251,8 +251,8 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         _logger.LogInformation("NetworkManager : partage sur {Name}", adapter.Name);
 
         // Annulation enregistrée avant l'action : supprimer le profil, puis rendre la carte à NetworkManager.
-        _journal.Push(CommandSpec.Of("nmcli", "device", "connect", adapter.Name));
-        _journal.Push(CommandSpec.Of("nmcli", "connection", "delete", "id", connection));
+        _journal.Push(UndoStep.LinuxConnectDevice(adapter.Name));
+        _journal.Push(UndoStep.LinuxDeleteConnection(connection));
 
         await _runner.RunAsync(CommandSpec.Of("nmcli", "connection", "delete", "id", connection).Lenient(), ct);
         await _runner.RunOrThrowAsync(
@@ -279,8 +279,8 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         var adapter = hotspot.Adapter ?? throw new SharingException("Carte Wi-Fi du hotspot non définie.");
         _logger.LogInformation("Hotspot Wi-Fi « {Ssid} » sur {Name}", hotspot.Ssid, adapter.Name);
 
-        _journal.Push(CommandSpec.Of("nmcli", "device", "connect", adapter.Name));
-        _journal.Push(CommandSpec.Of("nmcli", "connection", "delete", "id", AccessPointConnection));
+        _journal.Push(UndoStep.LinuxConnectDevice(adapter.Name));
+        _journal.Push(UndoStep.LinuxDeleteConnection(AccessPointConnection));
         await _runner.RunAsync(CommandSpec.Of("nmcli", "connection", "delete", "id", AccessPointConnection).Lenient(), ct);
 
         var args = new List<string>
@@ -309,35 +309,29 @@ public sealed partial class LinuxSharingBackend : ISharingBackend
         var address = $"{subnet.HostAddress(1)}/{subnet.PrefixLength}";
         _logger.LogInformation("NAT intégré : {Name} ({Subnet})", adapter.Name, subnet);
 
-        _journal.Push(CommandSpec.Of("ip", "addr", "del", address, "dev", adapter.Name));
+        _journal.Push(UndoStep.LinuxDeleteAddress(address, adapter.Name));
         await _runner.RunOrThrowAsync(
             new CommandSpec("ip", new[] { "addr", "add", address, "dev", adapter.Name }, Description: $"Adresse {address} sur {adapter.Name}"), ct);
         await _runner.RunOrThrowAsync(CommandSpec.Of("ip", "link", "set", adapter.Name, "up"), ct);
 
         var network = subnet.ToString();
-        var natTable = new[] { "-t", "nat" };
-        var noTable = Array.Empty<string>();
-
-        await AddFirewallRuleAsync(natTable, "POSTROUTING", new[] { "-s", network, "!", "-d", network }, "MASQUERADE", ct);
-        await AddFirewallRuleAsync(noTable, "FORWARD", new[] { "-i", adapter.Name }, "ACCEPT", ct);
-        await AddFirewallRuleAsync(
-            noTable, "FORWARD", new[] { "-o", adapter.Name, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED" }, "ACCEPT", ct);
-        await AddFirewallRuleAsync(
-            noTable, "INPUT", new[] { "-i", adapter.Name, "-p", "udp", "--dport", "67" }, "ACCEPT", ct);
+        foreach (var rule in new[]
+                 {
+                     LinuxFirewallRule.Masquerade, LinuxFirewallRule.ForwardIn,
+                     LinuxFirewallRule.ForwardOutEstablished, LinuxFirewallRule.DhcpInput,
+                 })
+        {
+            await AddFirewallRuleAsync(rule, adapter.Name, network, ct);
+        }
     }
 
     // Les règles sont insérées en tête de chaîne (-I) et marquées d'un commentaire ; l'annulation les supprime à l'identique (-D).
-    private async Task AddFirewallRuleAsync(string[] table, string chain, string[] match, string target, CancellationToken ct)
+    private async Task AddFirewallRuleAsync(LinuxFirewallRule rule, string interfaceName, string network, CancellationToken ct)
     {
-        string[] Build(string action) => table
-            .Append(action).Append(chain)
-            .Concat(match)
-            .Concat(new[] { "-m", "comment", "--comment", RuleTag, "-j", target })
-            .ToArray();
-
-        _journal.Push(new CommandSpec("iptables", Build("-D"), Description: "Suppression d'une règle NetShare Hub"));
+        _journal.Push(UndoStep.LinuxDeleteFirewallRule(rule, interfaceName, network));
+        var insert = UndoStep.IptablesArguments(rule, "-I", interfaceName, network);
         await _runner.RunOrThrowAsync(
-            new CommandSpec("iptables", Build("-I"), Description: $"Règle pare-feu {chain} {string.Join(' ', match)}"), ct);
+            new CommandSpec("iptables", insert, Description: $"Règle pare-feu {string.Join(' ', insert[..^6])}"), ct);
     }
 
     // --- Utilitaires ---------------------------------------------------------------------------------------------

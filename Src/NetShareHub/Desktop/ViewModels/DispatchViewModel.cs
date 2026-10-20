@@ -151,7 +151,9 @@ public sealed partial class DispatchViewModel : ObservableObject
 
     public bool CanEdit => State is RunState.Stopped or RunState.Faulted;
 
-    public bool CanStart => CanEdit && Catalog.SelectedSources.Any() && !HasPortError;
+    // Authentification cochée mais incomplète : on refuse de démarrer plutôt que d'ouvrir un proxy sans mot de passe
+    // (le service considère un identifiant vide comme un proxy ouvert).
+    public bool CanStart => CanEdit && Catalog.SelectedSources.Any() && !HasPortError && (!UseAuthentication || HasCredentials);
 
     /// <summary>Port vide, non numérique ou hors plage : signalé au lieu de démarrer en silence sur le port par défaut.</summary>
     public string PortError => Port is { } port && port == decimal.Truncate(port) && port is >= 1 and <= 65535
@@ -160,6 +162,10 @@ public sealed partial class DispatchViewModel : ObservableObject
 
     public bool HasPortError => PortError.Length > 0;
 
+    /// <summary>Identifiant (hors espaces) et mot de passe renseignés.</summary>
+    public bool HasCredentials => !string.IsNullOrWhiteSpace(Username) && !string.IsNullOrEmpty(Password);
+
+    public bool ShowCredentialsMissing => UseAuthentication && !HasCredentials;
     public string StateText => State switch
     {
         RunState.Running => "Dispatch actif",
@@ -175,7 +181,7 @@ public sealed partial class DispatchViewModel : ObservableObject
         ? "Les autres appareils du réseau (ou du hotspot) peuvent utiliser ce proxy."
         : "Seul cet ordinateur peut utiliser ce proxy.";
 
-    public bool ShowOpenProxyWarning => AllowLan && !UseAuthentication;
+    public bool ShowOpenProxyWarning => AllowLan && !(UseAuthentication && HasCredentials);
 
     public void Load(AppSettings_OutDto settings)
     {
@@ -353,11 +359,7 @@ public sealed partial class DispatchViewModel : ObservableObject
         _requestSave();
     }
 
-    partial void OnUseAuthenticationChanged(bool value)
-    {
-        OnPropertyChanged(nameof(ShowOpenProxyWarning));
-        _requestSave();
-    }
+    partial void OnUseAuthenticationChanged(bool value) => OnCredentialsChanged();
 
     partial void OnPortChanged(decimal? value)
     {
@@ -373,7 +375,16 @@ public sealed partial class DispatchViewModel : ObservableObject
 
     partial void OnHealthProbeChanged(bool value) => _requestSave();
 
-    partial void OnUsernameChanged(string value) => _requestSave();
+    partial void OnUsernameChanged(string value) => OnCredentialsChanged();
 
-    partial void OnPasswordChanged(string value) => _requestSave();
+    partial void OnPasswordChanged(string value) => OnCredentialsChanged();
+
+    private void OnCredentialsChanged()
+    {
+        OnPropertyChanged(nameof(HasCredentials));
+        OnPropertyChanged(nameof(ShowCredentialsMissing));
+        OnPropertyChanged(nameof(ShowOpenProxyWarning));
+        OnPropertyChanged(nameof(CanStart));
+        _requestSave();
+    }
 }

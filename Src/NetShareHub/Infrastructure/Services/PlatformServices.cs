@@ -113,7 +113,7 @@ public sealed class PrivilegeService : IPrivilegeService
             if (OperatingSystem.IsWindows())
             {
                 // UAC est synchrone : un refus lève une Win32Exception.
-                Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas" });
+                Process.Start(new ProcessStartInfo(executable, SingleInstanceLock.RelaunchArgument) { UseShellExecute = true, Verb = "runas" });
                 return true;
             }
 

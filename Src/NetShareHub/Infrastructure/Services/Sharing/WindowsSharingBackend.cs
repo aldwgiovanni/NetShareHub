@@ -43,7 +43,8 @@ public sealed class WindowsSharingBackend : ISharingBackend
         _inventory = inventory;
         _dhcpFactory = dhcpFactory;
         _logger = logger;
-        _journal = new UndoJournal(Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-windows.json"), runner, logger);
+        _journal = new UndoJournal(
+            Path.Combine(journalDirectory ?? AppPaths.JournalDirectory, "undo-windows.json"), runner, logger, enforceSecurity: journalDirectory is null);
     }
 
     public bool HasPendingRecovery => _journal.HasPending;
@@ -153,7 +154,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
     private async Task StartIcsAsync(NetworkAdapter source, NetworkAdapter target, CancellationToken ct)
     {
         _logger.LogInformation("ICS : {Source} → {Target}", source.Name, target.Name);
-        _journal.Push(CommandSpec.PowerShell(WindowsScripts.DisableIcs(), "Arrêt du partage de connexion Windows (ICS)"));
+        _journal.Push(UndoStep.WindowsDisableIcs());
         await ExecAsync(
             CommandSpec.PowerShell(
                 WindowsScripts.EnableIcs(source.Name, target.Name),
@@ -176,7 +177,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
             throw new SharingException("Le Point d'accès mobile de Windows est déjà actif : désactivez-le dans Paramètres avant de continuer.");
         }
 
-        _journal.Push(CommandSpec.PowerShell(WindowsScripts.StopHotspot(), "Arrêt du Point d'accès mobile"));
+        _journal.Push(UndoStep.WindowsStopHotspot());
         await ExecAsync(
             CommandSpec.PowerShell(
                 WindowsScripts.StartHotspot(guid, hotspot.Ssid, hotspot.Password, hotspot.Band),
@@ -195,8 +196,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
 
         // 1. Interface source : routage activé, et priorité si une autre connexion Internet existe.
         var sourceState = states[source.InterfaceIndex];
-        _journal.Push(CommandSpec.PowerShell(
-            WindowsScripts.SetForwarding(source.InterfaceIndex, sourceState.Forwarding), $"Restauration du routage sur {source.Name}"));
+        _journal.Push(UndoStep.WindowsSetForwarding(source.InterfaceIndex, sourceState.Forwarding, source.Name));
         await ExecAsync(
             CommandSpec.PowerShell(WindowsScripts.SetForwarding(source.InterfaceIndex, true), $"Routage IPv4 sur {source.Name}"), ct);
 
@@ -204,9 +204,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
             a.HasInternetRoute && a.Id != source.Id && plan.Targets.All(t => t.Adapter.Id != a.Id));
         if (competing)
         {
-            _journal.Push(CommandSpec.PowerShell(
-                WindowsScripts.SetMetric(source.InterfaceIndex, sourceState.AutoMetric ? null : sourceState.Metric),
-                $"Restauration de la priorité de {source.Name}"));
+            _journal.Push(UndoStep.WindowsSetMetric(source.InterfaceIndex, sourceState.AutoMetric ? null : sourceState.Metric, source.Name));
             await ExecAsync(
                 CommandSpec.PowerShell(WindowsScripts.SetMetric(source.InterfaceIndex, 5), $"Priorité de {source.Name}"), ct);
         }
@@ -216,9 +214,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
         {
             var adapter = target.Adapter;
             var subnet = target.Subnet!.Value;
-            _journal.Push(CommandSpec.PowerShell(
-                WindowsScripts.RestoreInterface(states[adapter.InterfaceIndex], adapter.Name),
-                $"Restauration de la configuration de {adapter.Name}"));
+            _journal.Push(UndoStep.WindowsRestoreInterface(states[adapter.InterfaceIndex], adapter.Name));
             await ExecAsync(
                 CommandSpec.PowerShell(
                     WindowsScripts.ConfigureTarget(adapter.InterfaceIndex, subnet.HostAddress(1), subnet.PrefixLength),
@@ -228,7 +224,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
 
         // 3. NAT Windows sur tout le bloc réservé.
         var block = plan.NatBlock!.Value;
-        _journal.Push(CommandSpec.PowerShell(WindowsScripts.RemoveNat(), "Suppression du NAT NetShare Hub"));
+        _journal.Push(UndoStep.WindowsRemoveNat());
         var nat = await _runner.RunAsync(
             CommandSpec.PowerShell(WindowsScripts.CreateNat(block.ToString()), $"Création du NAT {block}", ignoreFailure: true), ct);
         if (!nat.Success)
@@ -238,7 +234,7 @@ public sealed class WindowsSharingBackend : ISharingBackend
         }
 
         // 4. Pare-feu + DHCP.
-        _journal.Push(CommandSpec.PowerShell(WindowsScripts.RemoveDhcpFirewallRule(), "Suppression de la règle pare-feu DHCP"));
+        _journal.Push(UndoStep.WindowsRemoveDhcpFirewallRule());
         await ExecAsync(CommandSpec.PowerShell(WindowsScripts.AddDhcpFirewallRule(), "Règle pare-feu DHCP (UDP 67)"), ct);
 
         try

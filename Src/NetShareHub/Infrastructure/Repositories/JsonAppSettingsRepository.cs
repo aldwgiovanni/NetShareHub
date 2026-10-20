@@ -36,12 +36,12 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!File.Exists(_path))
+            await using var stream = AppPaths.OpenUserFileForRead(_path);
+            if (stream is null)
             {
                 return new AppSettings_OutDto();
             }
 
-            await using var stream = File.OpenRead(_path);
             var document = await JsonSerializer.DeserializeAsync<Document>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
             return document is null
                 ? new AppSettings_OutDto()
@@ -70,10 +70,6 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var directory = Path.GetDirectoryName(_path)!;
-            AppPaths.EnsureUserDirectory(directory);
-
-            var temp = _path + ".tmp";
             var document = new Document
             {
                 Sharing = settings.Sharing,
@@ -81,15 +77,8 @@ public sealed class JsonAppSettingsRepository : IAppSettingsRepository
                 Dispatch = settings.Dispatch,
             };
 
-            await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(document, JsonOptions), cancellationToken).ConfigureAwait(false);
-            if (!OperatingSystem.IsWindows())
-            {
-                // Le fichier peut contenir le mot de passe du hotspot : lecture réservée au propriétaire.
-                File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            }
-
-            AppPaths.GiveToInvokingUser(temp);
-            File.Move(temp, _path, overwrite: true);
+            // Fichier temporaire neuf (0600, sans suivre de lien) puis remplacement : voir AppPaths.WriteUserFileAsync.
+            await AppPaths.WriteUserFileAsync(_path, JsonSerializer.Serialize(document, JsonOptions), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
