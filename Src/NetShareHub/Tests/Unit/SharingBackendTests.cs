@@ -419,9 +419,32 @@ public class WindowsSharingBackendTests
         Assert.Contains("Find-Conn 'Ethernet'", enable.Script);
         Assert.Contains("EnableSharing(0)", enable.Script);
 
+        Assert.Contains(runner.Commands, c => c.Description == "Nettoyage d'un ancien partage ICS");
+
         runner.Commands.Clear();
         await backend.StopAsync();
-        Assert.Contains(runner.Commands, c => c.Description == "Arrêt du partage de connexion Windows (ICS)");
+
+        // ICS laisse 192.168.137.1 sur la cible : sa configuration d'origine est restaurée après l'arrêt d'ICS.
+        var descriptions = runner.Commands.Select(c => c.Description).ToList();
+        var disable = descriptions.IndexOf("Arrêt du partage de connexion Windows (ICS)");
+        var restore = descriptions.IndexOf("Restauration de la configuration de Ethernet");
+        Assert.True(disable >= 0 && restore > disable, string.Join(" | ", descriptions));
+        Assert.Contains("-IPAddress '192.168.50.2' -PrefixLength 24", runner.Commands[restore].Script);
+    }
+
+    [Fact]
+    public async Task Le_NAT_integre_seul_ne_touche_pas_aux_restes_d_ICS()
+    {
+        var (backend, runner, dir) = Create();
+        using var scope = dir;
+        var caps = await backend.ProbeAsync();
+        var plan = new SharingPlanner().Plan(
+            new SharingRequest_InDto { SourceAdapterIds = { Wifi.Id }, TargetAdapterIds = { "eth-id", "eth2-id" } },
+            new[] { Wifi, Eth, Eth2 }, caps);
+
+        await backend.StartAsync(plan);
+
+        Assert.DoesNotContain(runner.Commands, c => c.Description == "Nettoyage d'un ancien partage ICS");
     }
 
     [Fact]
@@ -442,6 +465,9 @@ public class WindowsSharingBackendTests
         await backend.StartAsync(plan);
 
         var start = Assert.Single(runner.Commands, c => c.Description == "Démarrage du Point d'accès mobile");
+        // Une adresse ICS restée fixe ailleurs priverait les clients du hotspot de DHCP : elle est retirée avant.
+        var cleanup = runner.Commands.FindIndex(c => c.Description == "Nettoyage d'un ancien partage ICS");
+        Assert.InRange(cleanup, 0, runner.Commands.IndexOf(start) - 1);
         Assert.Contains("$cfg.Ssid = 'L''été'", start.Script); // apostrophe doublée : pas d'injection possible
         Assert.Contains("$cfg.Passphrase = 'motdepasse1'", start.Script);
         Assert.Contains("Get-ShareProfile 'b85e7a63-105b-4fd0-a5ae-b2ebd796ee5b'", start.Script);
@@ -512,6 +538,7 @@ public class WindowsScriptsSyntaxTests
         yield return new object[] { "StopHotspot", WindowsScripts.StopHotspot() };
         yield return new object[] { "EnableIcs", WindowsScripts.EnableIcs("Wi-Fi", "Ethernet d'essai") };
         yield return new object[] { "DisableIcs", WindowsScripts.DisableIcs() };
+        yield return new object[] { "ClearIcsLeftovers", WindowsScripts.ClearIcsLeftovers() };
         yield return new object[] { "QueryInterfaces", WindowsScripts.QueryInterfaces(new[] { 5, 6, 12 }) };
         yield return new object[] { "ConfigureTarget", WindowsScripts.ConfigureTarget(5, address, 24) };
         yield return new object[] { "RestoreStatic", WindowsScripts.RestoreInterface(state, "Ethernet") };

@@ -7,7 +7,7 @@ liaisons (proxy « Dispatch »). Voir `README.md` pour le produit.
 
 ```powershell
 dotnet build NetShareHub.slnx
-dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj        # 221 tests
+dotnet test Src/NetShareHub/Tests/NetShareHub.Tests.csproj        # 223 tests
 ./packaging/build.ps1 [-Targets win-x64,linux-x64,linux-arm64]    # → dist/
 ```
 

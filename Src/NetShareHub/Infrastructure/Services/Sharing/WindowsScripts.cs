@@ -24,6 +24,9 @@ public sealed record InterfaceAddress(string Ip, int Prefix);
 internal static class WindowsScripts
 {
     public const string NatName = "NetShareHub";
+
+    /// <summary>Adresse que Windows donne à l'adaptateur privé d'ICS et du Point d'accès mobile.</summary>
+    public const string IcsScopeAddress = "192.168.137.1";
     public const string FirewallRuleName = "NetShareHub DHCP";
 
     // PowerShell reconnaît comme guillemet simple l'apostrophe ASCII et aussi les apostrophes typographiques U+2018 à U+201B
@@ -52,14 +55,17 @@ internal static class WindowsScripts
 
     // --- Point d'accès mobile (API WinRT) -------------------------------------------------------------------
 
-    private const string WinRtPrelude = """
+    // PowerShell ne choisit pas seul une surcharge d'AsTask pour un objet WinRT (vu comme __ComObject) :
+    // « Surcharge introuvable pour AsTask ». Les deux surcharges sont donc résolues par réflexion.
+    internal const string WinRtPrelude = """
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
         $null = [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]
         $null = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
         $null = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]
         $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
         function Await($op, $type) { $t = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op)); $null = $t.Wait(-1); $t.Result }
-        function AwaitAction($op) { $t = [System.WindowsRuntimeSystemExtensions]::AsTask($op); $null = $t.Wait(-1) }
+        $asTaskAction = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction' })[0]
+        function AwaitAction($op) { $t = $asTaskAction.Invoke($null, @($op)); $null = $t.Wait(-1) }
         $resultType = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]
         function Get-ShareProfile($guid) {
           if ($guid) {
@@ -165,6 +171,25 @@ internal static class WindowsScripts
     public static string DisableIcs() => IcsPrelude + """
 
         Clear-Sharing
+        'OK'
+        """;
+
+    /// <summary>
+    /// Désactiver ICS laisse l'adresse fixe 192.168.137.1 sur l'ancien adaptateur privé. Tant qu'elle y reste, ICS y lie
+    /// son DHCP : l'adaptateur du Point d'accès mobile se rabat sur .2 et les clients n'obtiennent plus d'adresse.
+    /// L'adaptateur Wi-Fi Direct (le hotspot lui-même) est géré par Windows et n'est pas touché.
+    /// </summary>
+    public static string ClearIcsLeftovers() => $$"""
+        foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress {{Quote(IcsScopeAddress)}} -ErrorAction SilentlyContinue)) {
+          if ($a.PrefixOrigin -ne 'Manual') { continue }
+          $ad = Get-NetAdapter -InterfaceIndex $a.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue
+          if (-not $ad -or $ad.InterfaceDescription -like '*Wi-Fi Direct*') { continue }
+          $a | Remove-NetIPAddress -Confirm:$false
+          if (-not (Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -PrefixOrigin Manual -ErrorAction SilentlyContinue)) {
+            Set-NetIPInterface -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -Dhcp Enabled
+          }
+          "CLEARED:$($ad.Name)"
+        }
         'OK'
         """;
 

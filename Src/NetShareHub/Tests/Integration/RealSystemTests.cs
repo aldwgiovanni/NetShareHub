@@ -63,6 +63,34 @@ public class RealSystemTests
             Assert.Equal(adapter.Gateway?.ToString(), state.Gateway);
         }
     }
+
+    [Fact]
+    public async Task Windows_le_prelude_WinRT_attend_IAsyncAction_et_IAsyncOperation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // Des opérations WinRT inoffensives (fichier temporaire) à la place de ConfigureAccessPointAsync (IAsyncAction)
+        // et StartTetheringAsync (IAsyncOperation), qui modifieraient le réseau.
+        using var dir = new TempDirectory();
+        var file = Path.Combine(dir.Path, "winrt.txt");
+        await File.WriteAllTextAsync(file, "x");
+        var script = WindowsScripts.WinRtPrelude + $$"""
+
+            $null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
+            $null = [Windows.Storage.FileIO,Windows.Storage,ContentType=WindowsRuntime]
+            $f = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync({{WindowsScripts.Quote(file)}})) ([Windows.Storage.StorageFile])
+            AwaitAction ([Windows.Storage.FileIO]::WriteTextAsync($f, 'OK'))
+            'OK'
+            """;
+
+        var result = await new CommandRunner(Logs.For<CommandRunner>()).RunAsync(CommandSpec.PowerShell(script, "Prélude WinRT"));
+
+        Assert.True(result.Success, result.StdErr);
+        Assert.Equal("OK", await File.ReadAllTextAsync(file));
+    }
 }
 
 public class WindowsSharingBackendRealTests

@@ -102,13 +102,19 @@ public sealed class WindowsSharingBackend : ISharingBackend
 
         try
         {
+            var ics = plan.Targets.FirstOrDefault(t => t.Mechanism == SharingMechanism.WindowsIcs);
+            if (ics is not null || plan.Hotspot is not null)
+            {
+                await ClearIcsLeftoversAsync(cancellationToken);
+            }
+
             var natTargets = plan.Targets.Where(DhcpScopes.IsBuiltInNat).ToList();
             if (natTargets.Count > 0)
             {
                 await StartBuiltInNatAsync(plan, natTargets, cancellationToken);
             }
 
-            if (plan.Targets.FirstOrDefault(t => t.Mechanism == SharingMechanism.WindowsIcs) is { } ics)
+            if (ics is not null)
             {
                 await StartIcsAsync(plan.PrimarySource, ics.Adapter, cancellationToken);
             }
@@ -154,12 +160,37 @@ public sealed class WindowsSharingBackend : ISharingBackend
     private async Task StartIcsAsync(NetworkAdapter source, NetworkAdapter target, CancellationToken ct)
     {
         _logger.LogInformation("ICS : {Source} → {Target}", source.Name, target.Name);
+
+        // ICS fixe 192.168.137.1 sur la cible et ne la rend pas à la désactivation : on restaure son état d'origine
+        // (inscrit avant, donc rejoué après l'arrêt d'ICS).
+        var states = await QueryStatesAsync(new[] { target.InterfaceIndex }, ct);
+        _journal.Push(UndoStep.WindowsRestoreInterface(states[target.InterfaceIndex], target.Name));
         _journal.Push(UndoStep.WindowsDisableIcs());
         await ExecAsync(
             CommandSpec.PowerShell(
                 WindowsScripts.EnableIcs(source.Name, target.Name),
                 $"Activation du partage ICS {source.Name} → {target.Name}"),
             ct);
+    }
+
+    /// <summary>Retire l'adresse ICS restée fixe sur un ancien adaptateur privé (voir <see cref="WindowsScripts.ClearIcsLeftovers"/>).</summary>
+    private async Task ClearIcsLeftoversAsync(CancellationToken ct)
+    {
+        var result = await _runner.RunAsync(
+            CommandSpec.PowerShell(WindowsScripts.ClearIcsLeftovers(), "Nettoyage d'un ancien partage ICS", ignoreFailure: true), ct);
+        if (!result.Success)
+        {
+            _logger.LogWarning("Nettoyage d'un ancien partage ICS impossible : {Error}", result.StdErr);
+            return;
+        }
+
+        foreach (var line in result.StdOut.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line.StartsWith("CLEARED:", StringComparison.Ordinal))
+            {
+                _logger.LogInformation("Adresse {Address} d'un ancien partage ICS retirée de {Adapter}", WindowsScripts.IcsScopeAddress, line["CLEARED:".Length..]);
+            }
+        }
     }
 
     // --- Point d'accès mobile ---------------------------------------------------------------------------------
