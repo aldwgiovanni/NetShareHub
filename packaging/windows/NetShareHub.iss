@@ -1,8 +1,8 @@
 ﻿; Script Inno Setup 6 (https://jrsoftware.org/isinfo.php) — installeur Windows de NetShare Hub.
-; Compilation : iscc /DAppVersion=1.0.1 /DSourceDir=..\..\dist\win-x64 NetShareHub.iss   (build.ps1 le fait tout seul si Inno Setup est installé)
+; Compilation : iscc /DAppVersion=1.0.2 /DSourceDir=..\..\dist\win-x64 NetShareHub.iss   (build.ps1 le fait tout seul si Inno Setup est installé)
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist\win-x64"

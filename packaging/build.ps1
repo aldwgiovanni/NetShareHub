@@ -15,7 +15,7 @@
   ./packaging/build.ps1 -Version 1.2.0
 #>
 param(
-    [string] $Version = '1.0.1',
+    [string] $Version = '1.0.2',
     [ValidateSet('win-x64', 'linux-x64', 'linux-arm64')]
     [string[]] $Targets = @('win-x64', 'linux-x64', 'linux-arm64')
 )
